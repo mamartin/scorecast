@@ -1,4 +1,4 @@
-import { MODELS, VARIABLES } from "/lib/config.js";
+import { AUTO_MODEL, MIX_MIN_GAIN, MODELS, VARIABLES } from "/lib/config.js";
 
 const $ = (sel, el = document) => el.querySelector(sel);
 const nf1 = new Intl.NumberFormat("cs-CZ", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -284,7 +284,6 @@ function render() {
   }
 
   const top = d.models[0];
-  const byName = (id) => d.models.find((m) => m.id === id)?.label ?? "–";
   const st = d.stations[0];
   const others = d.stations.length - 1;
 
@@ -296,11 +295,7 @@ function render() {
       <p class="place">${esc(place.name)}</p>
       <p class="said">Za posledních ${d.window.days} dní se tu s předpovědí ${leadPhrase(state.leads)} nejvíc trefoval</p>
       <h2 class="winner">${esc(top.label)}</h2>
-      <dl class="why">
-        ${Object.entries(VARIABLES)
-          .map(([k, v]) => `<div><dt>${v.label}</dt><dd>${esc(d.bestBy[k] ? byName(d.bestBy[k]) : "–")}</dd></div>`)
-          .join("")}
-      </dl>
+      ${mixBlock(d)}
       <p class="where">Měřeno na stanici ${esc(st.name)} (${st.distanceKm} km)${others > 0 ? ` a ${others} ${others === 1 ? "další" : "dalších"} v okolí` : ""}.</p>
     </div>
 
@@ -321,6 +316,22 @@ function render() {
     </div>
     ${missingNote(d)}
   `;
+}
+
+// Doporučený mix: model zvlášť pro každou veličinu. Jiný než Automaticky jen
+// s jasným náskokem (MIX_MIN_GAIN), jinak by doporučení skákalo po šumu.
+function mixBlock(d) {
+  if (!d.mix) return "";
+  const cells = Object.entries(VARIABLES).map(([k, v]) => {
+    const g = d.mix[k];
+    const picked = g && g.model !== AUTO_MODEL;
+    let note = "málo dat";
+    if (picked) note = g.gainPct != null ? `o ${nf0.format(g.gainPct)} % přesnější než Automaticky` : "Automaticky tu nemá data";
+    else if (g && !Number.isFinite(MIX_MIN_GAIN[k])) note = "zatím vždy Automaticky";
+    else if (g) note = "jiný model není výrazně lepší";
+    return `<div${picked ? ' class="pick"' : ""}><dt>${v.label}</dt><dd>${esc(g?.label ?? "–")}<small>${note}</small></dd></div>`;
+  });
+  return `<p class="mix-title">Doporučený mix modelů</p><dl class="why">${cells.join("")}</dl>`;
 }
 
 function row(m, i, shownDays) {

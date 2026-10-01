@@ -202,15 +202,18 @@ h1 {
   background: linear-gradient(var(--sock), var(--sock)) 0 100% / 100% 0.16em no-repeat;
   padding-bottom: 0.12em;
 }
+.verdict .mix-title { margin: 24px 0 0; font-weight: 700; }
 .verdict .why {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  margin: 22px 0 0;
+  margin: 10px 0 0;
 }
 .verdict .why div { border-left: 3px solid var(--line); padding-left: 10px; }
+.verdict .why div.pick { border-left-color: var(--sock); }
 .verdict .why dt { color: var(--muted); font-size: 0.85rem; }
 .verdict .why dd { margin: 2px 0 0; font-weight: 700; line-height: 1.25; }
+.verdict .why dd small { display: block; margin-top: 2px; font-weight: 400; font-size: 0.8rem; color: var(--muted); }
 .verdict .where { margin: 18px 0 0; color: var(--muted); font-size: 0.9rem; }
 
 /* ---------- ovládání ---------- */
