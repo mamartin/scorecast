@@ -228,6 +228,12 @@ function leadPhrase(leads) {
   return { "1": "na zítřek", "1,2": "na 1–2 dny", "3": "na 3 dny dopředu", "5": "na 5 dní dopředu" }[leads];
 }
 
+// Výškový rozdíl stanice proti místu, když je znát (od 50 m).
+function elevNote(st) {
+  if (st.elevDiff == null || Math.abs(st.elevDiff) < 50) return "";
+  return `, o ${nf0.format(Math.abs(st.elevDiff))} m ${st.elevDiff > 0 ? "výš" : "níž"}`;
+}
+
 function sortValue(m) {
   return state.by === "score" ? m.score : m.rel?.[state.by] ?? -1;
 }
@@ -298,7 +304,7 @@ function render() {
       <p class="said">Za posledních ${d.window.days} dní se tu s předpovědí ${leadPhrase(state.leads)} nejvíc trefoval</p>
       <h2 class="winner">${esc(top.label)}</h2>
       ${mixBlock(d)}
-      <p class="where">Měřeno na stanici ${esc(st.name)} (${st.distanceKm} km)${others > 0 ? ` a ${others} ${others === 1 ? "další" : "dalších"} v okolí` : ""}.</p>
+      <p class="where">Měřeno na stanici ${esc(st.name)} (${st.distanceKm} km${elevNote(st)})${others > 0 ? ` a ${others} ${others === 1 ? "další" : "dalších"} v okolí` : ""}.</p>
     </div>
 
     <div class="controls">

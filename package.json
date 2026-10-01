@@ -2,13 +2,16 @@
   "name": "scorecast",
   "private": true,
   "version": "0.1.0",
-  "description": "Noční ověřování přesnosti předpovědních modelů počasí proti měření stanic, API a webové srovnání.",
+  "description": "Noční ověřování přesnosti předpovědních modelů počasí proti měření stanic ČHMÚ a letišť, API a webové srovnání.",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "collect": "node scripts/collect.mjs",
-    "backfill": "BACKFILL_DAYS=60 node scripts/collect.mjs",
-    "dev": "node scripts/dev-server.mjs",
+    "backfill": "BACKFILL_DAYS=90 node scripts/collect.mjs",
+    "build": "node scripts/build-data.mjs",
+    "dev": "node scripts/build-data.mjs && node scripts/dev-server.mjs",
     "test": "node test/run.mjs"
   }
 }

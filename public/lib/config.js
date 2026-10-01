@@ -27,6 +27,11 @@ export const MODEL_BY_ID = Object.fromEntries(MODELS.map((m) => [m.id, m]));
 // S jakým předstihem hodnotíme (dny dopředu, viz *_previous_dayN v Open-Meteo).
 export const LEADS = [1, 2, 3, 5];
 
+// Za jaká období (dny) se předpočítávají součty a kolik posledních dní se
+// drží po dnech (hodnocení den po dni).
+export const WINDOWS = [7, 30, 90];
+export const DAILY_DAYS = 14;
+
 // Veličiny: název v Open-Meteo a váha v celkovém hodnocení.
 export const VARIABLES = {
   temperature: { om: "temperature_2m", label: "Teplota", unit: "°C", weight: 0.5 },

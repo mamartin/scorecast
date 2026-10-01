@@ -1,5 +1,7 @@
-# Každou noc doplní srovnání předpovědí s měřením za včerejšek (a případně
-# chybějící dny) a uloží data do repozitáře. Commit spustí deploy na Vercelu.
+# Každou noc doplní srovnání předpovědí s měřením za včerejšek a chybějící dny
+# za posledních 35 dní (např. měsíční data ČHMÚ, která vycházejí se zpožděním)
+# a uloží archiv do repozitáře. Commit spustí deploy na Vercelu, který z archivu
+# připraví data pro API (scripts/build-data.mjs).
 name: Noční ověření modelů
 
 on:
@@ -8,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       backfill_days:
-        description: "Kolik dní zpět doplnit (první spuštění třeba 60)"
+        description: "Kolik dní zpět doplnit (nejvýš 90 se použije na webu)"
         required: false
-        default: "3"
+        default: "35"
 
 permissions:
   contents: write
@@ -22,7 +24,8 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Open-Meteo zdarma pustí 5 000 vážených dotazů za hodinu → běh trvá ~2 h.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -30,11 +33,13 @@ jobs:
           node-version: 22
       - name: Sběr a výpočet
         env:
-          BACKFILL_DAYS: ${{ github.event.inputs.backfill_days || '3' }}
+          BACKFILL_DAYS: ${{ github.event.inputs.backfill_days || '35' }}
+          # Rozpočet vážených dotazů na Open-Meteo (zdarma 10 000 denně).
+          OM_BUDGET: "9000"
         run: node scripts/collect.mjs
       - name: Uložit data
         run: |
-          git add archive public/data
+          git add archive
           if git diff --cached --quiet; then
             echo "Beze změny."
             exit 0

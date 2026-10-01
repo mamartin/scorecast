@@ -1,6 +1,7 @@
-// Offline test: sběr nad napodobenými API do dočasné složky, pak volání API.
+// Offline test: sběr nad napodobenými API do dočasné složky, příprava dat
+// pro API a volání API.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import assert from "node:assert/strict";
@@ -8,12 +9,23 @@ import assert from "node:assert/strict";
 const root = resolve(import.meta.dirname, "..");
 const out = process.env.OUT_DIR ?? mkdtempSync(join(tmpdir(), "scorecast-"));
 const days = process.env.TEST_DAYS ?? "40";
-const r = spawnSync(process.execPath, ["--import", join(root, "test/mock-fetch.mjs"), join(root, "scripts/collect.mjs")], {
-  env: { ...process.env, OUT_DIR: out, BACKFILL_DAYS: days },
-  encoding: "utf8",
-});
-console.log(r.stdout.split("\n").slice(-3).join("\n"));
-assert.equal(r.status, 0, r.stderr);
+const run = (script, env = {}) => {
+  const r = spawnSync(process.execPath, ["--import", join(root, "test/mock-fetch.mjs"), join(root, script)], {
+    // Limity Open-Meteo v testu nebrzdí (napodobené API).
+    env: { ...process.env, OUT_DIR: out, BACKFILL_DAYS: days, OM_PER_MINUTE: "1e9", OM_PER_HOUR: "1e9", ...env },
+    encoding: "utf8",
+  });
+  assert.equal(r.status, 0, r.stderr || r.stdout);
+  return r.stdout;
+};
+const collected = run("scripts/collect.mjs");
+console.log(collected.split("\n").filter((l) => /^(Stanic|Hotovo)/.test(l)).join("\n"));
+assert.ok(existsSync(join(out, "archive/H3LSNE01/station.json")), "chybí stanice ČHMÚ");
+assert.ok(!existsSync(join(out, "archive/ZIS04030")), "stanice mimo ČR");
+assert.ok(!existsSync(join(out, "archive/B1SRAZ01")), "stanice bez teploty");
+// Druhý běh nemá co doplňovat (dny bez měření jsou označené jako prázdné).
+assert.match(run("scripts/collect.mjs"), /nově 0 stanice-dní/);
+console.log(run("scripts/build-data.mjs").trim());
 
 process.chdir(out);
 await import(join(root, "test/mock-fetch.mjs"));
@@ -25,15 +37,30 @@ const call = async (name, qs) => {
   await mod.default({ method: "GET", url: `/api/${name}?${qs}` }, res);
   return { status, json: body ? JSON.parse(body) : null };
 };
+const ids = (c) => c.json.stations.map((s) => s.id);
 
 const c = await call("compare", "lat=50.08&lon=14.42&days=30");
 assert.equal(c.status, 200);
 assert.ok(c.json.models.length > 5, "málo modelů");
 console.log("Praha – pořadí:", c.json.models.slice(0, 5).map((m) => `${m.id} ${m.score}`).join(", "));
-console.log("Nejlepší podle veličin:", c.json.bestBy, "stanice:", c.json.stations.map((s) => `${s.id} ${s.distanceKm}km ${s.weightPct}%`).join(", "));
+console.log("Praha – stanice:", c.json.stations.map((s) => `${s.id} ${s.distanceKm}km ${s.elevDiff ?? "?"}m ${s.weightPct}%`).join(", "));
 assert.equal(c.json.models[0].rank, 1);
-assert.ok(c.json.models.every((m) => m.daily.length === 30));
+assert.ok(c.json.models.every((m) => m.daily.length === 14));
 assert.ok(!c.json.models.some((m) => m.id === "knmi_seamless"), "KNMI by v Praze neměl mít data");
+assert.equal(c.json.stations[0].src, "chmi", "nejbližší má být stanice ČHMÚ");
+assert.ok(!ids(c).includes("LKPR"), "letiště má být za ČHMÚ, ne METAR (a jen jednou)");
+assert.ok(c.json.stations.every((s) => s.distanceKm <= 25), "v Praze stačí stanice do 25 km");
+
+const snapped = await call("compare", "lat=50.08&lon=14.42&days=10");
+assert.equal(snapped.json.window.days, 7);
+
+// Výška: na hřebeni vyhrává horská stanice, v Peci (816 m) údolní stanice.
+const ridge = await call("compare", "lat=50.73&lon=15.74");
+assert.equal(ridge.json.location.elev, 1500);
+assert.equal(ids(ridge)[0], "H3LSNE01");
+const valley = await call("compare", "lat=50.69&lon=15.73&elev=500");
+assert.deepEqual(ids(valley).slice(0, 2), ["H3LPEC01", "H1TRUT01"]);
+console.log("Krkonoše:", ids(ridge).join(", "), "|", ids(valley).join(", "));
 
 const l5 = await call("compare", "lat=50.08&lon=14.42&days=30&leads=5");
 assert.ok(!l5.json.models.some((m) => m.id === "chmi_aladin_cz_1km"), "ALADIN nemá předstih 5 dní");
@@ -42,7 +69,7 @@ console.log("Předstih 5 dní – vítěz:", l5.json.recommended);
 const b = await call("best", "lat=49.2&lon=16.6");
 assert.equal(b.status, 200);
 assert.ok(b.json.model);
-console.log("Brno /api/best:", b.json);
+console.log("Brno /api/best:", b.json.model, b.json.station, `${b.json.distanceKm} km`);
 
 // Mix: model pro každou veličinu, jiný než Automaticky jen s náskokem nad prahem.
 const { MIX_MIN_GAIN, MODEL_BY_ID } = await import(join(root, "public/lib/config.js"));

@@ -1,15 +1,19 @@
 // Noční sběr: pro každou stanici a každý den porovná archivní předpovědi
-// (Open-Meteo Previous Runs API) s měřením (METAR přes Iowa Environmental
-// Mesonet) a uloží denní souhrny chyb po modelech a předstizích.
+// (Open-Meteo Previous Runs API) s měřením a uloží denní souhrny chyb po
+// modelech a předstizích. Měření:
+//   - stanice ČHMÚ v Česku (otevřená 10min data, ~300 stanic s teplotou),
+//   - letištní METAR v Česku a okolí (Iowa Environmental Mesonet).
 //
-//   node scripts/collect.mjs              doplní chybějící dny za poslední 3 dny
-//   BACKFILL_DAYS=60 node scripts/collect.mjs   první naplnění historie
+//   node scripts/collect.mjs                   doplní chybějící dny za BACKFILL_DAYS (35)
+//   BACKFILL_DAYS=90 node scripts/collect.mjs  delší historie
 //
-// Výstup:
-//   archive/<stanice>.json        celá historie denních souhrnů (k přepočtům)
-//   public/data/stations/<id>.json  posledních PUBLIC_DAYS dní (čte API)
-//   public/data/stations.json     seznam stanic
-//   public/data/meta.json         kdy a za jaké období se počítalo
+// Dotazy na Open-Meteo jsou omezené rozpočtem OM_BUDGET (vážené dotazy, jak je
+// počítá Open-Meteo). Nejdřív se plní nejnovější dny; co se nevejde, doplní
+// další běh.
+//
+// Výstup: archive/<stanice>/station.json, archive/<stanice>/<RRRR-MM>.json
+// (`days` = denní souhrny, `empty` = dny, kdy stanice neměřila) a
+// archive/_meta.json. Data pro API z nich připraví scripts/build-data.mjs.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,19 +25,25 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // OUT_DIR jen pro testy (aby testovací data nepřepsala skutečná).
 const OUT = process.env.OUT_DIR ? resolve(process.env.OUT_DIR) : root;
 const ARCHIVE = resolve(OUT, "archive");
-const PUBLIC = resolve(OUT, "public/data");
 
+const SOURCES = (process.env.SOURCES ?? "chmi,metar").split(",");
 const NETWORKS = (process.env.NETWORKS ?? "CZ__ASOS,SK__ASOS,AT__ASOS,DE__ASOS,PL__ASOS").split(",");
 // Oblast ČR + okolí (pokrytí ALADIN a sousední regionální modely).
 const BBOX = { minLat: 47.6, maxLat: 51.9, minLon: 11.0, maxLon: 19.9 };
-const BACKFILL_DAYS = Number(process.env.BACKFILL_DAYS ?? 3);
-const PUBLIC_DAYS = 120;
+// Stanice ČHMÚ jen v Česku (metadata obsahují i pár zahraničních).
+const CZ_BBOX = { minLat: 48.5, maxLat: 51.1, minLon: 12.0, maxLon: 18.9 };
+const BACKFILL_DAYS = Number(process.env.BACKFILL_DAYS ?? 35);
+const OM_BUDGET = Number(process.env.OM_BUDGET ?? 9000);
 const STATION_LIMIT = Number(process.env.STATION_LIMIT ?? 0); // jen pro testy
 // Den musí mít aspoň tolik hodin měření, jinak ho přeskočíme (výpadek stanice).
 const MIN_OBS_HOURS = 12;
+// Den bez měření označíme jako prázdný až po této době (data mohou dorazit později).
+const SETTLE_DAYS = 5;
+const MAX_CHUNK_DAYS = 31;
 
 const IEM_GEOJSON = (n) => `https://mesonet.agron.iastate.edu/geojson/network/${n}.geojson`;
 const IEM_ASOS = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py";
+const CHMI = "https://opendata.chmi.cz/meteorology/climate";
 const PREVIOUS_RUNS = "https://previous-runs-api.open-meteo.com/v1/forecast";
 const HEADERS = { "User-Agent": "scorecast/1.0 (+https://github.com/mamartin/scorecast)" };
 const KNOT = 0.514444;
@@ -42,6 +52,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const DAY = 86_400_000;
 const ymd = (t) => new Date(t).toISOString().slice(0, 10);
 const hourKey = (t) => new Date(t).toISOString().slice(0, 13);
+const compact = (day) => day.replaceAll("-", "");
 
 async function fetchText(url, tries = 4) {
   let last;
@@ -49,7 +60,7 @@ async function fetchText(url, tries = 4) {
     try {
       const res = await fetch(url, { headers: HEADERS });
       if (res.ok) return await res.text();
-      last = new Error(`HTTP ${res.status} ${url.slice(0, 120)}`);
+      last = Object.assign(new Error(`HTTP ${res.status} ${url.slice(0, 120)}`), { status: res.status });
       if (res.status < 500 && res.status !== 429) break;
     } catch (e) {
       last = e;
@@ -58,6 +69,16 @@ async function fetchText(url, tries = 4) {
     if (i < tries - 1) await sleep(5000 * 2 ** i);
   }
   throw last;
+}
+
+// Jako fetchText, ale chybějící soubor (404) vrací null.
+async function fetchMaybe(url) {
+  try {
+    return await fetchText(url);
+  } catch (e) {
+    if (e.status === 404) return null;
+    throw e;
+  }
 }
 
 async function readJson(path, fallback) {
@@ -73,9 +94,16 @@ async function writeJson(path, data) {
   await writeFile(path, JSON.stringify(data) + "\n");
 }
 
+// Tabulka ČHMÚ { header: "A,B,…", values: [[…]] } → pole objektů.
+function chmiTable(text) {
+  const t = JSON.parse(text).data.data;
+  const cols = t.header.split(",");
+  return t.values.map((v) => Object.fromEntries(cols.map((c, i) => [c, v[i]])));
+}
+
 // ---------- stanice ----------
 
-async function loadStations() {
+async function loadMetarStations() {
   const out = [];
   for (const net of NETWORKS) {
     let gj;
@@ -98,10 +126,59 @@ async function loadStations() {
         lat: +lat.toFixed(4),
         lon: +lon.toFixed(4),
         elev: Number.isFinite(elev) ? Math.round(elev) : null,
+        src: "metar",
       });
     }
   }
-  return STATION_LIMIT ? out.slice(0, STATION_LIMIT) : out;
+  return out;
+}
+
+// Stanice ČHMÚ, které měří teplotu ve 2 m. Vítr bereme jen z čidel zhruba
+// v 10 m (jako model), srážky ze srážkoměrů s 10min úhrnem.
+async function loadChmiStations() {
+  let m1;
+  let m2;
+  for (const t of [Date.now(), Date.now() - DAY]) {
+    const d = compact(ymd(t));
+    m1 = await fetchMaybe(`${CHMI}/now/metadata/meta1-${d}.json`);
+    m2 = m1 && (await fetchMaybe(`${CHMI}/now/metadata/meta2-${d}.json`));
+    if (m1 && m2) break;
+  }
+  if (!m1 || !m2) {
+    console.warn("ČHMÚ: metadata stanic nejsou k dispozici");
+    return [];
+  }
+  const sensors = new Map();
+  for (const e of chmiTable(m2)) {
+    if (e.OBS_TYPE !== "10M") continue;
+    const s = sensors.get(e.WSI) ?? {};
+    const h = Number(e.HEIGHT);
+    if (e.EG_EL_ABBREVIATION === "T" && h >= 1.5 && h <= 2.6) s.t = true;
+    if (e.EG_EL_ABBREVIATION === "F" && h >= 8 && h <= 13) s.wind = true;
+    if (e.EG_EL_ABBREVIATION === "SRA10M") s.precip = true;
+    sensors.set(e.WSI, s);
+  }
+  const out = [];
+  for (const s of chmiTable(m1)) {
+    const lat = Number(s.GEOGR2);
+    const lon = Number(s.GEOGR1);
+    const has = sensors.get(s.WSI);
+    if (!has?.t || !/^[A-Z0-9]+$/.test(s.GH_ID ?? "")) continue;
+    if (lat < CZ_BBOX.minLat || lat > CZ_BBOX.maxLat || lon < CZ_BBOX.minLon || lon > CZ_BBOX.maxLon) continue;
+    const elev = Number(s.ELEVATION);
+    out.push({
+      id: s.GH_ID,
+      wsi: s.WSI,
+      name: String(s.FULL_NAME),
+      lat: +lat.toFixed(4),
+      lon: +lon.toFixed(4),
+      elev: Number.isFinite(elev) ? Math.round(elev) : null,
+      src: "chmi",
+      wind: Boolean(has.wind),
+      precip: Boolean(has.precip),
+    });
+  }
+  return out;
 }
 
 // ---------- měření ----------
@@ -116,11 +193,22 @@ function isPrecip(wx) {
   });
 }
 
-// Vrací mapu hodina (UTC, "YYYY-MM-DDTHH") → { t, w, wet }.
-// Teplota a vítr ze zprávy nejbližší celé hodině (±10 min); srážky = zda
-// některá zpráva v předchozí hodině (H-60, H] hlásila padající srážky –
+// Hodinové sloty měření: hodina (UTC, "YYYY-MM-DDTHH") → { t, w, reports, wet }.
+// Teplota a vítr k celé hodině; srážky za předchozí hodinu (H-60, H] –
 // stejně jako Open-Meteo počítá srážky za předchozí hodinu.
-async function loadObservations(station, fromMs, toMs) {
+function hourSlots() {
+  const hours = new Map();
+  const slot = (k) => {
+    let h = hours.get(k);
+    if (!h) hours.set(k, (h = { t: null, tD: Infinity, w: null, wD: Infinity, reports: 0, wet: false, mm: 0 }));
+    return h;
+  };
+  return { hours, slot };
+}
+
+// METAR: teplota a vítr ze zprávy nejbližší celé hodině (±10 min); srážky =
+// zda některá zpráva v předchozí hodině hlásila padající srážky.
+async function loadMetarObservations(station, fromMs, toMs) {
   const s = new Date(fromMs);
   const e = new Date(toMs);
   const p = new URLSearchParams({
@@ -141,13 +229,8 @@ async function loadObservations(station, fromMs, toMs) {
   const iT = header.indexOf("tmpc");
   const iW = header.indexOf("sknt");
   const iWx = header.indexOf("wxcodes");
-  const hours = new Map();
-  const slot = (k) => {
-    let h = hours.get(k);
-    if (!h) hours.set(k, (h = { t: null, tD: Infinity, w: null, wD: Infinity, reports: 0, wet: false }));
-    return h;
-  };
-  if (iValid < 0) return hours;
+  const { hours, slot } = hourSlots();
+  if (iValid < 0) return { hours, unavailable: new Set() };
 
   for (const line of lines) {
     const c = line.split(",");
@@ -155,13 +238,10 @@ async function loadObservations(station, fromMs, toMs) {
     if (!m) continue;
     const t = Date.parse(`${m[1]}T${m[2]}:${m[3]}:00Z`);
 
-    // Srážky: zpráva v (H-60, H] patří k hodině H.
-    const ownHour = Math.ceil(t / 3_600_000) * 3_600_000;
-    const ps = slot(hourKey(ownHour));
+    const ps = slot(hourKey(Math.ceil(t / 3_600_000) * 3_600_000));
     ps.reports++;
     if (iWx >= 0 && isPrecip(c[iWx])) ps.wet = true;
 
-    // Teplota a vítr: nejbližší celá hodina, max. 10 minut vedle.
     const near = Math.round(t / 3_600_000) * 3_600_000;
     const diff = Math.abs(t - near);
     if (diff > 10 * 60_000) continue;
@@ -177,7 +257,79 @@ async function loadObservations(station, fromMs, toMs) {
       ns.wD = diff;
     }
   }
-  return hours;
+  return { hours, unavailable: new Set() };
+}
+
+// ČHMÚ: posledních pár dní leží v now/ (soubor na den), starší v recent/
+// (soubor na měsíc, vychází začátkem dalšího měsíce). Měsíční soubory mají
+// kolem 5 MB, proto je držíme v paměti jen pro právě zpracovávanou stanici.
+const CHMI_ELEMENTS = new Set(["T", "F", "SRA10M"]);
+let chmiMonths = { station: null, cache: new Map() };
+
+function chmiRows(text) {
+  return chmiTable(text).filter((r) => CHMI_ELEMENTS.has(r.ELEMENT));
+}
+
+async function chmiDayRows(station, day) {
+  const today = ymd(Date.now());
+  if (day >= ymd(Date.now() - 2 * DAY) && day <= today) {
+    const text = await fetchMaybe(`${CHMI}/now/data/10m-${station.wsi}-${compact(day)}.json`);
+    if (text) return chmiRows(text);
+  }
+  if (chmiMonths.station !== station.id) chmiMonths = { station: station.id, cache: new Map() };
+  const month = day.slice(0, 7);
+  if (!chmiMonths.cache.has(month)) {
+    const url = `${CHMI}/recent/data/10min/${month.slice(5)}/10m-${station.wsi}-${compact(month)}.json`;
+    const text = await fetchMaybe(url);
+    const byDay = new Map();
+    if (text) {
+      for (const r of chmiRows(text)) {
+        const d = String(r.DT).slice(0, 10);
+        if (!byDay.has(d)) byDay.set(d, []);
+        byDay.get(d).push(r);
+      }
+    }
+    chmiMonths.cache.set(month, text ? byDay : null);
+  }
+  const byDay = chmiMonths.cache.get(month);
+  return byDay ? byDay.get(day) ?? [] : null;
+}
+
+async function loadChmiObservations(station, fromMs, toMs) {
+  const { hours, slot } = hourSlots();
+  const unavailable = new Set();
+  // Srážky v hodině 00 potřebují i 23:10–23:50 předchozího dne.
+  for (let t = fromMs - DAY; t <= toMs; t += DAY) {
+    const day = ymd(t);
+    const rows = await chmiDayRows(station, day);
+    if (rows == null) {
+      if (t >= fromMs) unavailable.add(day);
+      continue;
+    }
+    for (const r of rows) {
+      const ts = Date.parse(r.DT);
+      const v = Number(r.VAL);
+      if (!Number.isFinite(ts) || r.VAL == null || r.VAL === "" || !Number.isFinite(v)) continue;
+      if (r.ELEMENT === "SRA10M") {
+        // Úhrn za 10 minut končících v DT → patří k hodině, ve které interval končí.
+        if (v < 0 || v > 100) continue;
+        const s = slot(hourKey(Math.ceil(ts / 3_600_000) * 3_600_000));
+        s.reports++;
+        s.mm += v;
+        continue;
+      }
+      if (ts % 3_600_000 !== 0) continue; // teplota a vítr jen k celé hodině
+      const s = slot(hourKey(ts));
+      if (r.ELEMENT === "T" && v > -60 && v < 60) s.t = v;
+      if (r.ELEMENT === "F" && station.wind && v >= 0 && v < 80) s.w = v;
+    }
+  }
+  for (const s of hours.values()) {
+    // Srážky hodnotíme jen při (téměř) úplné hodině 10min úhrnů.
+    if (!station.precip || s.reports < 5) s.reports = 0;
+    s.wet = s.mm >= WET_MM;
+  }
+  return { hours, unavailable };
 }
 
 // ---------- předpovědi ----------
@@ -186,9 +338,35 @@ const FORECAST_VARS = Object.values(VARIABLES).flatMap((v) =>
   LEADS.map((d) => `${v.om}_previous_day${d}`),
 );
 
+// Open-Meteo počítá dotaz s víc než 10 proměnnými nebo 2 týdny dat jako víc
+// dotazů a zdarma povoluje 600 za minutu, 5 000 za hodinu a 10 000 za den.
+let omSpent = 0;
+const omCost = (nVars, nDays) => Math.max(1, nVars / 10) * Math.max(1, nDays / 14);
+const OM_PER_MINUTE = Number(process.env.OM_PER_MINUTE ?? 550);
+const OM_PER_HOUR = Number(process.env.OM_PER_HOUR ?? 4800);
+const omLog = []; // [čas, váha] odeslaných dotazů
+
+// Počká, až se dotaz s danou váhou vejde do minutového i hodinového limitu.
+async function omThrottle(cost) {
+  for (;;) {
+    const now = Date.now();
+    while (omLog.length && omLog[0][0] < now - 3_600_000) omLog.shift();
+    const used = (ms) => omLog.reduce((s, [t, c]) => (t >= now - ms ? s + c : s), 0);
+    const overMin = used(60_000) + cost > OM_PER_MINUTE;
+    const overHour = used(3_600_000) + cost > OM_PER_HOUR;
+    if (!overMin && !overHour) break;
+    // Počkat, až vypadne nejstarší dotaz z příslušného okna.
+    const oldest = omLog.find(([t]) => t >= now - (overHour ? 3_600_000 : 60_000));
+    await sleep(Math.max(1000, oldest[0] + (overHour ? 3_600_000 : 60_000) - now + 50));
+  }
+  omLog.push([Date.now(), cost]);
+  omSpent += cost;
+}
+
 // Jeden dotaz na všechny modely; když ho Open-Meteo odmítne (některý model
-// tu nemá data), zkusí modely po jednom. Vrací { times, get(model, var) }.
+// tu nemá data), zkusí modely po jednom. Vrací { times, series }.
 async function loadForecasts(station, startDay, endDay) {
+  const nDays = (Date.parse(endDay) - Date.parse(startDay)) / DAY + 1;
   const query = (ms) => {
     const p = new URLSearchParams({
       latitude: String(station.lat),
@@ -211,6 +389,7 @@ async function loadForecasts(station, startDay, endDay) {
   let times = [];
   const series = {}; // model → var → hodnoty
   try {
+    await omThrottle(omCost(FORECAST_VARS.length * ids.length, nDays));
     const h = parse(await fetchText(query(ids)));
     times = h.time ?? [];
     for (const m of ids) {
@@ -221,6 +400,7 @@ async function loadForecasts(station, startDay, endDay) {
     console.warn(`  ${station.id}: hromadný dotaz selhal (${e.message}), zkouším po modelech`);
     for (const m of ids) {
       try {
+        await omThrottle(omCost(FORECAST_VARS.length, nDays));
         const h = parse(await fetchText(query([m]), 1));
         if (h.time?.length) times = h.time;
         series[m] = {};
@@ -237,12 +417,18 @@ async function loadForecasts(station, startDay, endDay) {
 
 // ---------- výpočet ----------
 
+// Kolik hodin s teplotou má který den.
+function obsHoursPerDay(obs) {
+  const n = new Map();
+  for (const [k, o] of obs) {
+    if (o.t != null) n.set(k.slice(0, 10), (n.get(k.slice(0, 10)) ?? 0) + 1);
+  }
+  return n;
+}
+
 function scoreDays(obs, fc) {
   const days = {}; // den → model → předstih → pole F
-  const obsHoursPerDay = new Map();
-  for (const [k, o] of obs) {
-    if (o.t != null) obsHoursPerDay.set(k.slice(0, 10), (obsHoursPerDay.get(k.slice(0, 10)) ?? 0) + 1);
-  }
+  const perDay = obsHoursPerDay(obs);
   const vT = VARIABLES.temperature.om;
   const vW = VARIABLES.wind.om;
   const vP = VARIABLES.precipitation.om;
@@ -250,7 +436,7 @@ function scoreDays(obs, fc) {
   fc.times.forEach((time, i) => {
     const key = String(time).slice(0, 13);
     const day = key.slice(0, 10);
-    if ((obsHoursPerDay.get(day) ?? 0) < MIN_OBS_HOURS) return;
+    if ((perDay.get(day) ?? 0) < MIN_OBS_HOURS) return;
     const o = obs.get(key);
     if (!o) return;
     for (const [model, s] of Object.entries(fc.series)) {
@@ -296,82 +482,125 @@ function scoreDays(obs, fc) {
   return days;
 }
 
-// Souvislé úseky chybějících dní → méně dotazů.
-function missingRanges(have, fromMs, toMs) {
-  const ranges = [];
+// ---------- archiv ----------
+
+const monthPath = (id, month) => resolve(ARCHIVE, id, `${month}.json`);
+
+function monthsIn(fromMs, toMs) {
+  const out = [];
+  for (let t = fromMs; t <= toMs; t += DAY) {
+    const m = ymd(t).slice(0, 7);
+    if (out.at(-1) !== m) out.push(m);
+  }
+  return out;
+}
+
+// Souvislé úseky chybějících dní (nejvýš MAX_CHUNK_DAYS) → méně dotazů.
+function missingChunks(known, fromMs, toMs) {
+  const chunks = [];
   let cur = null;
   for (let t = fromMs; t <= toMs; t += DAY) {
-    const d = ymd(t);
-    if (have[d]) {
+    if (known.has(ymd(t))) {
       cur = null;
       continue;
     }
-    if (cur && cur.end === t - DAY) cur.end = t;
-    else ranges.push((cur = { start: t, end: t }));
+    if (cur && cur.end === t - DAY && (t - cur.start) / DAY < MAX_CHUNK_DAYS) cur.end = t;
+    else chunks.push((cur = { start: t, end: t }));
   }
-  return ranges;
+  return chunks;
 }
 
 async function main() {
-  const stations = await loadStations();
+  const stations = [
+    ...(SOURCES.includes("chmi") ? await loadChmiStations() : []),
+    ...(SOURCES.includes("metar") ? await loadMetarStations() : []),
+  ];
+  const list = STATION_LIMIT ? stations.slice(0, STATION_LIMIT) : stations;
   const today = Date.parse(ymd(Date.now()));
   const last = today - DAY; // včerejšek – poslední den s kompletním měřením
   const first = last - (BACKFILL_DAYS - 1) * DAY;
-  console.log(`Stanic: ${stations.length}, dny ${ymd(first)} – ${ymd(last)}`);
+  const settled = ymd(last - SETTLE_DAYS * DAY);
+  const counts = list.reduce((a, s) => ({ ...a, [s.src]: (a[s.src] ?? 0) + 1 }), {});
+  console.log(`Stanic: ${list.length} (${JSON.stringify(counts)}), dny ${ymd(first)} – ${ymd(last)}, rozpočet Open-Meteo ${OM_BUDGET}`);
 
-  const index = [];
-  let added = 0;
-  for (const st of stations) {
-    const path = resolve(ARCHIVE, `${st.id}.json`);
-    const arch = await readJson(path, { days: {} });
-    const ranges = missingRanges(arch.days, first, last);
-    for (const r of ranges) {
-      try {
-        // Měření i z předchozího dne (srážky v hodině 00 UTC potřebují 23:xx).
-        const obs = await loadObservations(st, r.start - DAY, r.end + DAY);
-        const fc = await loadForecasts(st, ymd(r.start), ymd(r.end));
-        const days = scoreDays(obs, fc);
-        for (const [d, v] of Object.entries(days)) {
-          if (Date.parse(d) >= r.start && Date.parse(d) <= r.end) {
-            arch.days[d] = v;
-            added++;
-          }
-        }
-        console.log(`  ${st.id} ${st.name}: ${ymd(r.start)}–${ymd(r.end)} → ${Object.keys(days).length} dní`);
-      } catch (e) {
-        console.warn(`  ${st.id}: ${e.message}`);
-      }
-      await sleep(400); // šetrně k bezplatným API
+  // Archiv každé stanice za sledované období a chybějící úseky.
+  const work = [];
+  for (const st of list) {
+    const months = new Map();
+    for (const m of monthsIn(first, last)) months.set(m, await readJson(monthPath(st.id, m), { days: {}, empty: [] }));
+    const known = new Set();
+    for (const mo of months.values()) {
+      for (const d of Object.keys(mo.days)) known.add(d);
+      for (const d of mo.empty ?? []) known.add(d);
     }
-
-    const dayKeys = Object.keys(arch.days).sort();
-    if (!dayKeys.length) continue;
-    const sorted = Object.fromEntries(dayKeys.map((d) => [d, arch.days[d]]));
-    await writeJson(path, { ...st, days: sorted });
-
-    const cutoff = ymd(last - (PUBLIC_DAYS - 1) * DAY);
-    const recent = Object.fromEntries(dayKeys.filter((d) => d >= cutoff).map((d) => [d, arch.days[d]]));
-    await writeJson(resolve(PUBLIC, "stations", `${st.id}.json`), { ...st, days: recent });
-    index.push({ ...st, firstDay: dayKeys[0], lastDay: dayKeys.at(-1) });
+    await writeJson(resolve(ARCHIVE, st.id, "station.json"), st);
+    work.push({ st, months, chunks: missingChunks(known, first, last), dirty: new Set() });
   }
 
-  // Stanice, které dnes nepřišly (výpadek seznamu), ze seznamu nevyhazujeme.
-  const previous = await readJson(resolve(PUBLIC, "stations.json"), []);
-  for (const s of previous) if (!index.some((x) => x.id === s.id)) index.push(s);
+  // Nejdřív poslední dny všech stanic, pak starší úseky od nejnovějších.
+  const recent = last - 2 * DAY;
+  const tasks = [
+    ...work.flatMap((w) => w.chunks.filter((c) => c.end >= recent).map((c) => ({ w, c }))),
+    ...work.flatMap((w) => w.chunks.filter((c) => c.end < recent).reverse().map((c) => ({ w, c }))),
+  ];
+  const fullCost = (nDays) => omCost(FORECAST_VARS.length * MODELS.length, nDays);
+  let added = 0;
+  let skipped = 0;
+  for (const { w, c } of tasks) {
+    const { st } = w;
+    const nDays = (c.end - c.start) / DAY + 1;
+    if (omSpent + fullCost(nDays) > OM_BUDGET) {
+      skipped++;
+      continue;
+    }
+    try {
+      const obs = st.src === "chmi"
+        ? await loadChmiObservations(st, c.start, c.end)
+        : await loadMetarObservations(st, c.start - DAY, c.end + DAY);
+      // Předpovědi stahujeme jen pro dny, které mají dost měření.
+      const perDay = obsHoursPerDay(obs.hours);
+      const good = [];
+      for (let t = c.start; t <= c.end; t += DAY) {
+        const d = ymd(t);
+        if ((perDay.get(d) ?? 0) >= MIN_OBS_HOURS) good.push(d);
+        else if (!obs.unavailable.has(d) && d <= settled) {
+          w.months.get(d.slice(0, 7)).empty.push(d); // stanice ten den neměřila
+          w.dirty.add(d.slice(0, 7));
+        }
+      }
+      if (good.length) {
+        const fc = await loadForecasts(st, good[0], good.at(-1));
+        const days = scoreDays(obs.hours, fc);
+        for (const d of good) {
+          if (!days[d]) continue;
+          w.months.get(d.slice(0, 7)).days[d] = days[d];
+          w.dirty.add(d.slice(0, 7));
+          added++;
+        }
+      }
+      console.log(`  ${st.id} ${st.name}: ${ymd(c.start)}–${ymd(c.end)} → ${good.length} dní s měřením`);
+    } catch (e) {
+      console.warn(`  ${st.id}: ${e.message}`);
+    }
+    // Zapsat hned, ať se při pádu běhu neztratí hotová práce.
+    for (const m of w.dirty) {
+      const mo = w.months.get(m);
+      const days = Object.fromEntries(Object.keys(mo.days).sort().map((d) => [d, mo.days[d]]));
+      await writeJson(monthPath(st.id, m), { days, empty: [...new Set(mo.empty)].sort() });
+    }
+    w.dirty.clear();
+    await sleep(st.src === "chmi" ? 100 : 400); // šetrně k bezplatným API
+  }
 
-  if (!index.length) {
-    console.error("Žádná stanice nemá data – nic neukládám.");
+  await writeJson(resolve(ARCHIVE, "_meta.json"), { collected: new Date().toISOString() });
+  console.log(
+    `Hotovo: nově ${added} stanice-dní, Open-Meteo ${Math.round(omSpent)} z ${OM_BUDGET}` +
+      (skipped ? `, ${skipped} úseků odloženo na příští běh (rozpočet)` : "") + ".",
+  );
+  if (!added && !work.some((w) => w.chunks.length === 0)) {
+    console.error("Žádná stanice nemá data.");
     process.exitCode = 1;
-    return;
   }
-  await writeJson(resolve(PUBLIC, "stations.json"), index);
-  await writeJson(resolve(PUBLIC, "meta.json"), {
-    generated: new Date().toISOString(),
-    lastDay: index.map((s) => s.lastDay).sort().at(-1),
-    leads: LEADS,
-    stations: index.length,
-  });
-  console.log(`Hotovo: ${index.length} stanic, nově ${added} stanice-dní.`);
 }
 
 await main();

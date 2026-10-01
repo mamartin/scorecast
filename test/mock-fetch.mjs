@@ -1,4 +1,4 @@
-// Napodobené odpovědi IEM a Open-Meteo (ve tvaru jejich API) pro offline test.
+// Napodobené odpovědi IEM, ČHMÚ a Open-Meteo (ve tvaru jejich API) pro offline test.
 // Každý model má jinou přesnost pro teplotu, vítr a srážky, krátkodobé
 // regionální modely nemají data pro delší předstih ani mimo svou oblast.
 const STATIONS = {
@@ -10,7 +10,20 @@ const STATIONS = {
   PL__ASOS: [["EPKT", "Katowice", 19.08, 50.47, 303]],
   SK__ASOS: [["LZIB", "Bratislava", 17.21, 48.17, 133]],
 };
-const ALL = Object.values(STATIONS).flat();
+// Stanice ČHMÚ: [GH_ID, WSI, název, lon, lat, výška, výška čidla větru (0 = není), srážkoměr].
+// Ruzyně leží vedle letiště LKPR (stejné místo), Sněžka a Pec jsou na horách.
+export const CHMI = [
+  ["P1PRUZ01", "0-20000-0-11518", "Praha, Ruzyně", 14.2558, 50.1003, 364, 10, true],
+  ["P1PKAR01", "0-20000-0-11519", "Praha, Karlov", 14.4189, 50.0692, 261, 0, true],
+  ["P1PLIB01", "0-20000-0-11520", "Praha, Libuš", 14.4467, 50.0078, 302, 10, true],
+  ["B2BTUR01", "0-20000-0-11723", "Brno, Tuřany", 16.6956, 49.1597, 241, 10, true],
+  ["H3LSNE01", "0-20000-0-11787", "Sněžka", 15.74, 50.7361, 1602, 10, true],
+  ["H3LPEC01", "0-203-0-11605", "Pec pod Sněžkou", 15.729, 50.6917, 816, 26, true],
+  ["H1TRUT01", "0-203-0-11603", "Trutnov", 15.9, 50.56, 420, 10, false],
+  ["O1OMOS01", "0-20000-0-11782", "Ostrava, Mošnov", 18.1111, 49.6919, 251, 10, true],
+];
+const CHMI_BY_WSI = Object.fromEntries(CHMI.map((s) => [s[1], s]));
+const ALL = [...Object.values(STATIONS).flat(), ...CHMI.map(([id, , name, lon, lat]) => [id, name, lon, lat])];
 const pos = Object.fromEntries(ALL.map(([id, , lon, lat]) => [id, { lat, lon }]));
 
 // Deterministický „náhodný" šum podle klíče.
@@ -42,8 +55,80 @@ const SKILL = {
 };
 
 const ok = (body) => new Response(body, { status: 200 });
+const missing = () => new Response("nenalezeno", { status: 404 });
+const chmiTable = (header, values) => JSON.stringify({ data: { type: "DataCollection", data: { header, values } } });
+const DAY = 86400000;
+
+// 10min měření ČHMÚ za jeden den (UTC): teplota, vítr, 10min úhrn srážek.
+function chmiDay(st, dayMs) {
+  const [id, wsi, , , , , windH, precip] = st;
+  const rows = [];
+  for (let t = dayMs; t < dayMs + DAY; t += 600000) {
+    if (h(id + "gap" + t) < 0.02) continue; // občas výpadek
+    const dt = new Date(t).toISOString().slice(0, 19) + "Z";
+    const hour = Math.round(t / 3.6e6) * 3.6e6;
+    rows.push([wsi, "T", dt, +(truthT(id, hour) + (t === hour ? 0 : 0.2)).toFixed(1), "", 5]);
+    if (windH) rows.push([wsi, "F", dt, +truthW(id, hour).toFixed(1), "", 5]);
+    if (precip) {
+      const wet = truthWet(id, Math.ceil(t / 3.6e6) * 3.6e6);
+      rows.push([wsi, "SRA10M", dt, wet ? +(0.1 + h(id + "mm" + t) * 0.3).toFixed(1) : 0, "", 5]);
+    }
+  }
+  return rows;
+}
+
+function chmi(u) {
+  const header10 = "STATION,ELEMENT,DT,VAL,FLAG,QUALITY";
+  const file = u.pathname.split("/").pop();
+  if (/^meta1-/.test(file)) {
+    return ok(chmiTable("WSI,GH_ID,FULL_NAME,GEOGR1,GEOGR2,ELEVATION,BEGIN_DATE", [
+      ...CHMI.map(([id, wsi, name, lon, lat, elev]) => [wsi, id, name, lon, lat, elev, "1961-01-01T00:00:00Z"]),
+      ["0-20000-0-04030", "ZIS04030", "Reykjavik", -21.9, 64.13, 51, "2015-01-01T00:00:00Z"], // mimo ČR
+      ["0-203-0-11999", "B1SRAZ01", "Jen srážkoměr", 16.1, 49.5, 500, "2000-01-01T00:00:00Z"], // bez teploty
+    ]));
+  }
+  if (/^meta2-/.test(file)) {
+    const el = (wsi, abbr, height) => ["10M", wsi, abbr, abbr, "", height, "10M"];
+    return ok(chmiTable("OBS_TYPE,WSI,EG_EL_ABBREVIATION,NAME,UN_DESCRIPTION,HEIGHT,SCHEDULE", [
+      ...CHMI.flatMap(([, wsi, , , , , windH, precip]) => [
+        el(wsi, "T", 2), ...(windH ? [el(wsi, "F", windH)] : []), ...(precip ? [el(wsi, "SRA10M", 1)] : []),
+      ]),
+      el("0-20000-0-04030", "T", 2),
+      el("0-203-0-11999", "SRA10M", 1),
+    ]));
+  }
+  // now/data/10m-<WSI>-<RRRRMMDD>.json – jen poslední 3 dny
+  let m = /^10m-(.+)-(\d{4})(\d{2})(\d{2})\.json$/.exec(file);
+  if (m && u.pathname.includes("/now/")) {
+    const st = CHMI_BY_WSI[m[1]];
+    const day = Date.UTC(+m[2], +m[3] - 1, +m[4]);
+    const today = Date.parse(new Date().toISOString().slice(0, 10));
+    if (!st || day < today - 2 * DAY || day > today) return missing();
+    return ok(chmiTable(header10, chmiDay(st, day)));
+  }
+  // recent/data/10min/MM/10m-<WSI>-<RRRRMM>.json – měsíce před tím aktuálním
+  m = /^10m-(.+)-(\d{4})(\d{2})\.json$/.exec(file);
+  if (m && u.pathname.includes("/recent/")) {
+    const st = CHMI_BY_WSI[m[1]];
+    const month = Date.UTC(+m[2], +m[3] - 1, 1);
+    const now = new Date();
+    if (!st || month >= Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)) return missing();
+    const rows = [];
+    for (let d = month; new Date(d).getUTCMonth() === +m[3] - 1; d += DAY) rows.push(...chmiDay(st, d));
+    return ok(chmiTable(header10, rows));
+  }
+  return missing();
+}
+
 globalThis.fetch = async (url) => {
   const u = new URL(url);
+  if (u.hostname === "opendata.chmi.cz") return chmi(u);
+  if (u.pathname === "/v1/elevation") {
+    // Krkonoše vysoko, jinde nížina.
+    const lat = +u.searchParams.get("latitude");
+    const lon = +u.searchParams.get("longitude");
+    return ok(JSON.stringify({ elevation: [lat > 50.6 && lon > 15.5 && lon < 16 ? 1500 : 300] }));
+  }
   if (u.pathname.includes("/geojson/network/")) {
     const net = u.pathname.split("/").pop().replace(".geojson", "");
     const features = (STATIONS[net] ?? []).map(([sid, sname, lon, lat, elevation]) => ({
@@ -100,5 +185,5 @@ globalThis.fetch = async (url) => {
   if (u.hostname.startsWith("geocoding-api")) {
     return ok(JSON.stringify({ results: [{ id: 3067696, name: "Praha", latitude: 50.088, longitude: 14.421, country: "Česko", admin1: "Hlavní město Praha" }] }));
   }
-  return new Response("nenalezeno", { status: 404 });
+  return missing();
 };
