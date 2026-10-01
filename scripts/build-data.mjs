@@ -1,7 +1,8 @@
 // Připraví data pro API z archivu (běží při nasazení na Vercelu a před
 // lokálním serverem):
-//   public/data/stations/<id>.json  součty za okna WINDOWS (7/30/90 dní)
-//                                   a posledních DAILY_DAYS dní po dnech
+//   public/data/stations/<id>.json  součty za okna WINDOWS (7/30/90 dní),
+//                                   posledních DAILY_DAYS dní po dnech
+//                                   a jejich hodinová měření (detail dne)
 //   public/data/stations.json       seznam stanic a kolik dní mají v každém okně
 //   public/data/meta.json           kdy proběhl sběr a do kterého dne jsou data
 // Archiv se commituje, public/data ne – jinak by se každou noc přepisovaly
@@ -61,10 +62,12 @@ const dailyFrom = ymd(end - (DAILY_DAYS - 1) * DAY);
 const index = [];
 for (const { meta, files } of stations) {
   const days = {};
+  const hours = {};
   for (const f of files) {
     if (f.slice(0, 7) < from.slice(0, 7)) continue;
     const mo = await readJson(resolve(ARCHIVE, meta.id, f), { days: {} });
     for (const [d, v] of Object.entries(mo.days)) if (d >= from && d <= lastDay) days[d] = v;
+    for (const [d, v] of Object.entries(mo.hours ?? {})) if (d >= dailyFrom && d <= lastDay) hours[d] = v;
   }
   const dayKeys = Object.keys(days).sort();
   if (!dayKeys.length) continue;
@@ -95,7 +98,7 @@ for (const { meta, files } of stations) {
   }
   const daily = Object.fromEntries(dayKeys.filter((d) => d >= dailyFrom).map((d) => [d, days[d]]));
   const { id, name, lat, lon, elev, src } = meta;
-  await writeJson(resolve(PUBLIC, "stations", `${id}.json`), { id, name, lat, lon, elev, src, windows, days: daily });
+  await writeJson(resolve(PUBLIC, "stations", `${id}.json`), { id, name, lat, lon, elev, src, windows, days: daily, hours });
   index.push({ id, name, lat, lon, elev, src, firstDay: dayKeys[0], lastDay: dayKeys.at(-1), cover });
 }
 

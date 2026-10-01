@@ -307,12 +307,94 @@ h1 {
 .strip button[data-b="0"] {
   background: repeating-linear-gradient(135deg, var(--bar-track) 0 3px, transparent 3px 6px);
 }
+.strip button[data-b="0"] { cursor: default; }
+.strip button[aria-expanded="true"] { outline: 2px solid var(--ink); outline-offset: 1px; }
 .tip {
   margin: 6px 0 0;
   min-height: 1.3em;
   font-size: 0.85rem;
   color: var(--ink-2);
 }
+
+/* ---------- detail dne ---------- */
+
+.day-detail {
+  margin: 8px 0 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+}
+.dd-head { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
+.dd-head p { margin: 0; font-size: 0.9rem; color: var(--ink-2); }
+.dd-close {
+  flex: none;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.dd-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 10px 0 2px;
+  padding: 0;
+  list-style: none;
+  font-size: 0.85rem;
+  color: var(--ink-2);
+}
+.dd-legend .sw {
+  display: inline-block;
+  width: 18px;
+  height: 3px;
+  margin-right: 6px;
+  border-radius: 2px;
+  background: var(--c, var(--ink));
+  vertical-align: middle;
+}
+.dd-legend .sw.obs { background: var(--ink); }
+.dd-legend .sw.auto { background: repeating-linear-gradient(90deg, var(--muted) 0 4px, transparent 4px 7px); }
+.dd-chart { position: relative; margin-top: 10px; }
+.dd-title { margin: 0 0 2px; font-size: 0.8rem; font-weight: 700; color: var(--ink-2); }
+.dd-title small { font-weight: 400; color: var(--muted); }
+.dd-chart svg { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+.dd-chart .grid { stroke: var(--line); stroke-width: 1; }
+.dd-chart .axis { fill: var(--muted); font: 11px var(--text); }
+.dd-chart path { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.dd-chart path.obs { stroke: var(--ink); }
+.dd-chart path.auto { stroke: var(--muted); stroke-dasharray: 4 3; stroke-width: 1.5; }
+.dd-chart rect.obs, .dd-chart circle.obs { fill: var(--ink); }
+.dd-chart rect.auto { fill: var(--muted); }
+.dd-chart .cross { stroke: var(--muted); stroke-width: 1; }
+.dd-tip {
+  position: absolute;
+  top: 18px;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+.dd-tip[hidden] { display: none; }
+.dd-note, .dd-empty { margin: 8px 0 0; font-size: 0.8rem; color: var(--muted); }
+.dd-table { margin-top: 10px; font-size: 0.85rem; }
+.dd-table summary { cursor: pointer; color: var(--ink-2); }
+.dd-scroll { overflow-x: auto; margin-top: 6px; }
+.dd-table table { border-collapse: collapse; width: 100%; font-size: 0.8rem; }
+.dd-table th, .dd-table td { padding: 3px 6px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.dd-table th:first-child, .dd-table td:first-child { text-align: left; }
+.dd-table thead th { color: var(--muted); font-weight: 400; }
 
 .legend {
   display: flex;

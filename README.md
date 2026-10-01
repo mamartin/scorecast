@@ -43,7 +43,8 @@ v nočním sběru.
    jednom místě se počítají jednou. Sečte je (bližší váží víc) a spočítá
    metriky a hodnocení. Výšku místa zjistí z Open-Meteo, pokud ji nepošlete.
 4. **Web** (`public/`) – vyhledání místa, doporučený model, pořadí modelů,
-   statistiky pro teplotu, vítr a srážky a hodnocení den po dni.
+   statistiky pro teplotu, vítr a srážky a hodnocení den po dni. Klik na den
+   ukáže průběh po hodinách: naměřeno proti předpovědi modelu a Automaticky.
 
 ### Metriky
 
@@ -99,6 +100,14 @@ pro `/api/best`. Vrací stanice s vahou, vzdáleností a výškovým rozdílem,
 modely seřazené podle hodnocení (metriky pro každou veličinu a hodnocení za
 posledních 14 dní po dnech), doporučený model, nejlepší model pro každou
 veličinu a mix.
+
+### `/api/day?lat=…&lon=…&day=RRRR-MM-DD&model=…&lead=1` – průběh dne
+
+Hodinu po hodině, co model (a pro srovnání Automaticky) předpovídal s daným
+předstihem a co naměřila nejbližší stanice v podobné výšce. Měření jsou
+z archivu (`hours` v měsíčních souborech, posledních 14 dní), předpověď se
+stáhne z archivu Open-Meteo pro místo stanice. `observed.p`: úhrn v mm,
+`-1` = pršelo, ale úhrn neznáme (METAR), `null` = neměřeno. Časy jsou v UTC.
 
 ### `/api/places?q=…` a `/api/place?id=…` – našeptávač míst
 

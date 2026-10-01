@@ -14,13 +14,14 @@
 // další běh.
 //
 // Výstup: archive/<stanice>/station.json, archive/<stanice>/<RRRR-MM>.json
-// (`days` = denní souhrny, `empty` = dny, kdy stanice neměřila) a
+// (`days` = denní souhrny, `hours` = hodinová měření pro detail dne na webu,
+// `empty` = dny, kdy stanice neměřila) a
 // archive/_meta.json. Data pro API z nich připraví scripts/build-data.mjs.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  F, F_LEN, F_SUMS, HEAVY_MM, LEADS, MODELS, TEMP_OK, VARIABLES, WET_MM, WIND_OK, roundSum,
+  DAILY_DAYS, F, F_LEN, F_SUMS, HEAVY_MM, LEADS, MODELS, TEMP_OK, VARIABLES, WET_MM, WIND_OK, roundSum,
 } from "../public/lib/config.js";
 import { loadMerge, mergeHours } from "./radar.mjs";
 
@@ -372,6 +373,21 @@ function applyRadar(hours, byHour, fromMs, toMs) {
   }
 }
 
+// Hodinová měření dne pro detail na webu: t (°C), w (m/s), p (mm; -1 = pršelo,
+// ale úhrn neznáme – METAR), null = v té hodině neměřeno.
+function hourlyObs(hours, day) {
+  const t = [];
+  const w = [];
+  const p = [];
+  for (let h = 0; h < 24; h++) {
+    const o = hours.get(`${day}T${String(h).padStart(2, "0")}`);
+    t.push(o?.t ?? null);
+    w.push(o?.w == null ? null : Math.round(o.w * 10) / 10);
+    p.push(!o?.reports ? null : o.mmKnown ? Math.round(o.mm * 10) / 10 : o.wet ? -1 : 0);
+  }
+  return { t, w, p };
+}
+
 // ---------- předpovědi ----------
 
 const FORECAST_VARS = Object.values(VARIABLES).flatMap((v) =>
@@ -559,6 +575,20 @@ function missingChunks(known, fromMs, toMs) {
   return chunks;
 }
 
+const sortKeys = (o) => Object.fromEntries(Object.keys(o).sort().map((k) => [k, o[k]]));
+
+async function saveMonths(w) {
+  for (const m of w.dirty) {
+    const mo = w.months.get(m);
+    await writeJson(monthPath(w.st.id, m), {
+      days: sortKeys(mo.days),
+      empty: [...new Set(mo.empty)].sort(),
+      hours: sortKeys(mo.hours),
+    });
+  }
+  w.dirty.clear();
+}
+
 async function main() {
   const stations = [
     ...(SOURCES.includes("chmi") ? await loadChmiStations() : []),
@@ -577,7 +607,9 @@ async function main() {
   const work = [];
   for (const st of list) {
     const months = new Map();
-    for (const m of monthsIn(first, last)) months.set(m, await readJson(monthPath(st.id, m), { days: {}, empty: [] }));
+    for (const m of monthsIn(first, last)) {
+      months.set(m, { days: {}, empty: [], hours: {}, ...(await readJson(monthPath(st.id, m), {})) });
+    }
     const known = new Set();
     for (const mo of months.values()) {
       for (const d of Object.keys(mo.days)) known.add(d);
@@ -589,7 +621,7 @@ async function main() {
 
   // Radar za hodiny ve sledovaném období (archiv má jen ~týden).
   let radar = new Map();
-  if (work.some((w) => w.chunks.length)) {
+  {
     try {
       const hours = (await mergeHours(fetchText)).filter((t) => t >= first && t < last + DAY);
       const r = await loadMerge(list, hours, fetchBuffer);
@@ -637,7 +669,9 @@ async function main() {
         const days = scoreDays(obs.hours, fc);
         for (const d of good) {
           if (!days[d]) continue;
-          w.months.get(d.slice(0, 7)).days[d] = days[d];
+          const mo = w.months.get(d.slice(0, 7));
+          mo.days[d] = days[d];
+          mo.hours[d] = hourlyObs(obs.hours, d);
           w.dirty.add(d.slice(0, 7));
           added++;
         }
@@ -646,15 +680,38 @@ async function main() {
     } catch (e) {
       console.warn(`  ${st.id}: ${e.message}`);
     }
-    // Zapsat hned, ať se při pádu běhu neztratí hotová práce.
-    for (const m of w.dirty) {
-      const mo = w.months.get(m);
-      const days = Object.fromEntries(Object.keys(mo.days).sort().map((d) => [d, mo.days[d]]));
-      await writeJson(monthPath(st.id, m), { days, empty: [...new Set(mo.empty)].sort() });
-    }
-    w.dirty.clear();
+    await saveMonths(w); // hned, ať se při pádu běhu neztratí hotová práce
     await sleep(st.src === "chmi" ? 100 : 400); // šetrně k bezplatným API
   }
+
+  // Hodinová měření pro detail dne doplníme i k posledním dnům, které je
+  // ještě nemají (bez dotazů na Open-Meteo).
+  const detailFrom = ymd(last - (DAILY_DAYS - 1) * DAY);
+  let detailed = 0;
+  for (const w of work) {
+    const need = [...w.months.values()]
+      .flatMap((mo) => Object.keys(mo.days).filter((d) => d >= detailFrom && !mo.hours[d]))
+      .sort();
+    if (!need.length) continue;
+    const from = Date.parse(need[0]);
+    const to = Date.parse(need.at(-1));
+    try {
+      const obs = w.st.src === "chmi"
+        ? await loadChmiObservations(w.st, from, to)
+        : await loadMetarObservations(w.st, from - DAY, to + DAY);
+      applyRadar(obs.hours, radar.get(w.st.id), from, to);
+      for (const d of need) {
+        if (obs.unavailable.has(d)) continue;
+        w.months.get(d.slice(0, 7)).hours[d] = hourlyObs(obs.hours, d);
+        w.dirty.add(d.slice(0, 7));
+        detailed++;
+      }
+      await saveMonths(w);
+    } catch (e) {
+      console.warn(`  ${w.st.id} (hodinová měření): ${e.message}`);
+    }
+  }
+  if (detailed) console.log(`Hodinová měření doplněna k ${detailed} stanice-dnům.`);
 
   await writeJson(resolve(ARCHIVE, "_meta.json"), { collected: new Date().toISOString() });
   console.log(

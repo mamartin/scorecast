@@ -261,10 +261,15 @@ function windStat(w) {
   return `<dd>±${nf1.format(w.mae)} m/s<small>${nf0.format(w.okPct)} % do ±2 m/s</small></dd>`;
 }
 
+// Trefa (CSI) řadí modely; pod ní srozumitelněji, kolik hodin s deštěm
+// model předem zachytil (zvlášť pro silnější déšť).
 function precipStat(p) {
   if (!p || p.csi == null || p.wetHours < 5) return `<dd>–<small>málo deště k hodnocení</small></dd>`;
-  const heavy = p.heavyCsi != null && p.heavyHours >= 3 ? `<small>silnější déšť ${nf0.format(p.heavyCsi)} %</small>` : "";
-  return `<dd>${nf0.format(p.csi)} %<small>trefa deště</small>${heavy}</dd>`;
+  const caught = p.pod != null ? `<small>zachytil ${nf0.format(p.pod)} % hodin s deštěm</small>` : "";
+  const heavy = p.heavyPod != null && p.heavyHours >= 3
+    ? `<small>a ${nf0.format(p.heavyPod)} % se silnějším (od 1 mm/h)</small>`
+    : "";
+  return `<dd>${nf0.format(p.csi)} %<small>trefa deště</small>${caught}${heavy}</dd>`;
 }
 
 function segment(name, legend, options, current, key) {
@@ -370,14 +375,188 @@ function row(m, i, shownDays) {
             .map((x) => {
               const txt = x.score == null
                 ? `${fmtDay(x.day)}: bez dat`
-                : `${fmtDay(x.day)}: hodnocení ${x.score}${x.tempMae != null ? `, teplota ±${nf1.format(x.tempMae)} °C` : ""}`;
-              return `<button type="button" data-b="${bucket(x.score)}" data-tip="${esc(txt)}" aria-label="${esc(txt)}"></button>`;
+                : `${fmtDay(x.day)}: hodnocení ${x.score}${x.tempMae != null ? `, teplota ±${nf1.format(x.tempMae)} °C` : ""} – klikněte pro průběh dne`;
+              return `<button type="button" data-b="${bucket(x.score)}" data-day="${x.score == null ? "" : x.day}" data-tip="${esc(txt)}" aria-label="${esc(txt)}" aria-expanded="false"></button>`;
             })
             .join("")}
         </div>
         <p class="tip" aria-live="polite"></p>
+        <div class="day-detail" hidden></div>
       </div>
     </li>`;
+}
+
+// ---------- detail dne: co model předpovídal a co se naměřilo ----------
+
+const LEAD_TEXT = { 1: "vydaná den předem", 2: "vydaná 2 dny předem", 3: "vydaná 3 dny předem", 5: "vydaná 5 dní předem" };
+const MODEL_BY = Object.fromEntries(MODELS.map((m) => [m.id, m]));
+const CHARTS = [
+  { k: "t", title: "Teplota", unit: "°C" },
+  { k: "w", title: "Vítr", unit: "m/s" },
+  { k: "p", title: "Srážky", unit: "mm za hodinu", bars: true },
+];
+const PAD = { l: 34, r: 8, t: 8, b: 20 };
+let detail = null; // otevřený detail (pro hodnoty při najetí myší)
+
+// Místní hodina (Praha) pro hodinu h dne počítaného v UTC.
+const localHour = (day, h) =>
+  new Date(Date.parse(`${day}T00:00:00Z`) + h * 3_600_000)
+    .toLocaleTimeString("cs-CZ", { hour: "numeric", timeZone: "Europe/Prague" });
+
+function closeDays() {
+  for (const c of result.querySelectorAll('.strip button[aria-expanded="true"]')) c.setAttribute("aria-expanded", "false");
+  for (const p of result.querySelectorAll(".day-detail")) {
+    p.hidden = true;
+    p.innerHTML = "";
+  }
+  detail = null;
+}
+
+async function openDay(cell) {
+  const wasOpen = cell.getAttribute("aria-expanded") === "true";
+  closeDays();
+  const day = cell.dataset.day;
+  if (wasOpen || !day) return;
+  const li = cell.closest(".row");
+  const panel = li.querySelector(".day-detail");
+  const model = li.dataset.model;
+  const lead = Number(state.leads.split(",")[0]);
+  cell.setAttribute("aria-expanded", "true");
+  panel.hidden = false;
+  panel.innerHTML = `<p class="loading">Načítám ${fmtDay(day)}</p>`;
+  try {
+    const { lat, lon } = state.place;
+    const r = await fetch(`/api/day?lat=${lat}&lon=${lon}&day=${day}&model=${encodeURIComponent(model)}&lead=${lead}`);
+    if (!r.ok) throw new Error(String(r.status));
+    const data = await r.json();
+    if (cell.getAttribute("aria-expanded") !== "true") return; // mezitím zavřeno
+    if (!data.station) {
+      panel.innerHTML = `<p class="dd-empty">Pro tento den nemáme měření po hodinách – ukládáme je od 2. 10. 2026.</p>`;
+      return;
+    }
+    renderDay(panel, data, model);
+  } catch {
+    panel.innerHTML = `<p class="dd-empty">Průběh dne se nepodařilo načíst.</p>`;
+  }
+}
+
+function renderDay(panel, data, model) {
+  const series = [
+    { key: "obs", label: "Naměřeno", cls: "obs" },
+    { key: model, label: MODEL_BY[model]?.label ?? model, color: MODEL_BY[model]?.color },
+    ...(model !== AUTO_MODEL ? [{ key: AUTO_MODEL, label: "Automaticky", cls: "auto" }] : []),
+  ];
+  const values = (s, k) => (s.key === "obs" ? data.observed[k] : data.forecast[s.key]?.[k]) ?? [];
+  const width = Math.max(280, Math.round(panel.clientWidth - 24));
+  detail = { data, series, values, width };
+  const st = data.station;
+  const fmt = (v, k) => (v == null ? "–" : v === -1 ? "pršelo" : `${nf1.format(v)}${k === "p" ? " mm" : k === "t" ? " °C" : " m/s"}`);
+  panel.innerHTML = `
+    <div class="dd-head">
+      <p><strong>${fmtDay(data.day)}</strong> · předpověď ${LEAD_TEXT[data.lead]} · měřeno na stanici ${esc(st.name)} (${st.distanceKm} km${elevNote(st)})</p>
+      <button type="button" class="dd-close" aria-label="Zavřít průběh dne">×</button>
+    </div>
+    <ul class="dd-legend">${series
+      .map((s) => `<li><i class="sw ${s.cls ?? ""}"${s.color ? ` style="--c:${s.color}"` : ""}></i>${esc(s.label)}</li>`)
+      .join("")}</ul>
+    ${CHARTS.map((c) => chartSvg(c, series, values, data.day, width)).join("")}
+    ${data.observed.p.includes(-1) ? `<p class="dd-note">Letiště hlásí jen, jestli pršelo, ne kolik – takové hodiny jsou označené tečkou.</p>` : ""}
+    <p class="dd-note">Časy jsou místní; den počítáme v UTC, proto začíná od ${localHour(data.day, 0)}:00 místního času.</p>
+    <details class="dd-table">
+      <summary>Tabulka po hodinách</summary>
+      <div class="dd-scroll"><table>
+        <thead><tr><th>Hodina</th>${CHARTS.map((c) => `<th colspan="2">${c.title}</th>`).join("")}</tr>
+          <tr><th></th>${CHARTS.map(() => `<th>naměřeno</th><th>${esc(series[1].label)}</th>`).join("")}</tr></thead>
+        <tbody>${Array.from({ length: 24 }, (_, h) => `<tr><td>${localHour(data.day, h)} h</td>${CHARTS.map(
+          (c) => `<td>${fmt(values(series[0], c.k)[h], c.k)}</td><td>${fmt(values(series[1], c.k)[h], c.k)}</td>`,
+        ).join("")}</tr>`).join("")}</tbody>
+      </table></div>
+    </details>`;
+}
+
+const xAt = (h, width) => PAD.l + ((width - PAD.l - PAD.r) * (h + 0.5)) / 24;
+
+function chartSvg(c, series, values, day, width) {
+  const height = c.bars ? 96 : 128;
+  const all = series.flatMap((s) => values(s, c.k)).filter((v) => v != null && v >= 0);
+  let lo = c.bars ? 0 : Math.floor(Math.min(...all, Infinity));
+  let hi = Math.ceil(Math.max(...all, c.bars ? 1 : -Infinity));
+  if (!all.length || !Number.isFinite(lo)) [lo, hi] = [0, 1];
+  if (!c.bars && hi - lo < 2) [lo, hi] = [lo - 1, hi + 1];
+  const y = (v) => PAD.t + (height - PAD.t - PAD.b) * (1 - (v - lo) / (hi - lo));
+  const ticks = [lo, (lo + hi) / 2, hi];
+  const grid = ticks
+    .map((t) => `<line class="grid" x1="${PAD.l}" x2="${width - PAD.r}" y1="${y(t)}" y2="${y(t)}"/><text class="axis" x="${PAD.l - 6}" y="${y(t) + 4}" text-anchor="end">${nf1.format(t).replace(",0", "")}</text>`)
+    .join("");
+  const xLabels = [0, 3, 6, 9, 12, 15, 18, 21]
+    .map((h) => `<text class="axis" x="${xAt(h, width)}" y="${height - 4}" text-anchor="middle">${localHour(day, h)}</text>`)
+    .join("");
+  let marks = "";
+  if (c.bars) {
+    const slot = (width - PAD.l - PAD.r) / 24;
+    const bw = Math.max(2, Math.min(7, (slot - 3) / series.length));
+    series.forEach((s, i) => {
+      values(s, c.k).forEach((v, h) => {
+        const x = xAt(h, width) - (bw * series.length) / 2 + i * bw;
+        if (v === -1) marks += `<circle class="wet ${s.cls ?? ""}" cx="${x + bw / 2}" cy="${y(0) - 4}" r="2.5"/>`;
+        else if (v > 0) marks += `<rect class="${s.cls ?? ""}" x="${x}" y="${y(v)}" width="${bw - 1}" height="${Math.max(1, y(0) - y(v))}" rx="1"${s.color ? ` style="fill:${s.color}"` : ""}/>`;
+      });
+    });
+  } else {
+    for (const s of [...series].reverse()) {
+      let d = "";
+      let pen = false;
+      values(s, c.k).forEach((v, h) => {
+        if (v == null) return void (pen = false);
+        d += `${pen ? "L" : "M"}${xAt(h, width).toFixed(1)},${y(v).toFixed(1)}`;
+        pen = true;
+      });
+      if (d) marks += `<path class="${s.cls ?? ""}" d="${d}"${s.color ? ` style="stroke:${s.color}"` : ""}/>`;
+    }
+  }
+  const unmeasured = values(series[0], c.k).every((v) => v == null);
+  const dry = c.bars && !unmeasured && !series.some((s) => values(s, c.k).some((v) => v === -1 || v > 0));
+  const note = unmeasured ? " · stanice tuhle veličinu neměří" : dry ? " · nepršelo a modely déšť nečekaly" : "";
+  return `
+    <div class="dd-chart" data-k="${c.k}">
+      <p class="dd-title">${c.title} <small>${c.unit}${note}</small></p>
+      <svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${c.title} po hodinách: naměřeno a předpověď">
+        ${grid}${xLabels}${marks}
+        <line class="cross" x1="0" x2="0" y1="${PAD.t}" y2="${height - PAD.b}" visibility="hidden"/>
+      </svg>
+      <div class="dd-tip" hidden></div>
+    </div>`;
+}
+
+function showHour(ch, clientX) {
+  if (!detail) return;
+  const svg = ch.querySelector("svg");
+  const rect = svg.getBoundingClientRect();
+  const px = ((clientX - rect.left) / rect.width) * detail.width;
+  const h = Math.max(0, Math.min(23, Math.floor(((px - PAD.l) / (detail.width - PAD.l - PAD.r)) * 24)));
+  const k = ch.dataset.k;
+  const x = xAt(h, detail.width);
+  const cross = svg.querySelector(".cross");
+  cross.setAttribute("x1", x);
+  cross.setAttribute("x2", x);
+  cross.setAttribute("visibility", "visible");
+  const unit = k === "t" ? " °C" : k === "w" ? " m/s" : " mm";
+  const tip = ch.querySelector(".dd-tip");
+  tip.innerHTML = `<b>${localHour(detail.data.day, h)} h</b> ${detail.series
+    .map((s) => {
+      const v = detail.values(s, k)[h];
+      return `<span>${esc(s.label)}: ${v == null ? "–" : v === -1 ? "pršelo" : nf1.format(v) + unit}</span>`;
+    })
+    .join("")}`;
+  tip.hidden = false;
+  const left = (x / detail.width) * rect.width;
+  tip.style.left = `${Math.max(80, Math.min(rect.width - 80, left))}px`;
+}
+
+function hideHour(ch) {
+  ch.querySelector(".cross")?.setAttribute("visibility", "hidden");
+  const tip = ch.querySelector(".dd-tip");
+  if (tip) tip.hidden = true;
 }
 
 function missingNote(d) {
@@ -402,8 +581,21 @@ result.addEventListener("click", (e) => {
     return;
   }
   const cell = e.target.closest(".strip button");
-  if (cell) cell.closest(".strip-wrap").querySelector(".tip").textContent = cell.dataset.tip;
+  if (cell) {
+    cell.closest(".strip-wrap").querySelector(".tip").textContent = cell.dataset.tip;
+    openDay(cell);
+    return;
+  }
+  if (e.target.closest(".dd-close")) closeDays();
 });
+
+result.addEventListener("pointermove", (e) => {
+  const ch = e.target.closest?.(".dd-chart");
+  if (ch) showHour(ch, e.clientX);
+});
+result.addEventListener("pointerleave", (e) => {
+  if (e.target.closest?.(".dd-chart")) hideHour(e.target.closest(".dd-chart"));
+}, true);
 
 for (const ev of ["mouseover", "focusin"]) {
   result.addEventListener(ev, (e) => {

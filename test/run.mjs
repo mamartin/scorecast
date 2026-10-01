@@ -106,6 +106,21 @@ for (const v of ["temperature", "wind", "precipitation"]) {
 }
 console.log("Brno mix:", Object.entries(b.json.mix).map(([v, g]) => `${v} ${g.model} (${g.gainPct} %)`).join(", "));
 
+// Detail dne: hodinová měření nejbližší stanice a předpověď modelu i Automaticky.
+const day = c.json.window.end;
+const dd = await call("day", `lat=50.08&lon=14.42&day=${day}&model=icon_seamless&lead=1`);
+assert.equal(dd.status, 200);
+assert.equal(dd.json.station.id, "P1PKAR01");
+assert.equal(dd.json.observed.t.length, 24);
+assert.ok(dd.json.observed.t.filter((x) => x != null).length >= 20, "málo hodin měření");
+assert.deepEqual(Object.keys(dd.json.forecast).sort(), ["best_match", "icon_seamless"]);
+assert.ok(dd.json.forecast.icon_seamless.t.every((x) => typeof x === "number"));
+const metarDay = await call("day", `lat=48.35&lon=11.79&day=${day}&model=best_match&lead=2`);
+assert.equal(metarDay.json.station.id, "EDDM");
+assert.ok(metarDay.json.observed.p.every((x) => x === null || x === 0 || x === -1), "METAR hlásí jen déšť ano/ne");
+assert.equal((await call("day", "lat=50.08&lon=14.42&day=včera")).status, 400);
+console.log("Detail dne:", dd.json.station.name, "t", dd.json.observed.t.slice(0, 4), "vs", dd.json.forecast.icon_seamless.t.slice(0, 4));
+
 const far = await call("best", "lat=38.7&lon=-9.1");
 assert.equal(far.json.model, null);
 assert.equal(far.json.mix, null);
