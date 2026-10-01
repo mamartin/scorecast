@@ -1,4 +1,6 @@
 // Napodobené odpovědi IEM, ČHMÚ a Open-Meteo (ve tvaru jejich API) pro offline test.
+import { readFileSync } from "node:fs";
+
 // Každý model má jinou přesnost pro teplotu, vítr a srážky, krátkodobé
 // regionální modely nemají data pro delší předstih ani mimo svou oblast.
 const STATIONS = {
@@ -77,9 +79,24 @@ function chmiDay(st, dayMs) {
   return rows;
 }
 
+// Radar MERGE: skutečný snímek (24. 9. 2026 10 UTC, déšť na horách) pro hodiny
+// 6–11 UTC včerejška. Víc stejných hodin po sobě by filtr bral jako falešné echo.
+const MERGE_FIXTURE = readFileSync(new URL("./fixtures/merge-202609241000.hdf", import.meta.url));
+const mergeStamps = () => {
+  const y = Date.parse(new Date().toISOString().slice(0, 10)) - DAY;
+  return [6, 7, 8, 9, 10, 11].map((h) => new Date(y + h * 3.6e6).toISOString().replace(/[-:T]/g, "").slice(0, 12) + "00");
+};
+
 function chmi(u) {
   const header10 = "STATION,ELEMENT,DT,VAL,FLAG,QUALITY";
   const file = u.pathname.split("/").pop();
+  if (u.pathname.endsWith("/merge1h/hdf5/")) {
+    return ok(mergeStamps().map((t) => `<a href="T_PASV23_C_OKPR_${t}.hdf">T_PASV23_C_OKPR_${t}.hdf</a>`).join("\n"));
+  }
+  if (u.pathname.includes("/merge1h/hdf5/")) {
+    const t = /_(\d{14})\.hdf$/.exec(file)?.[1];
+    return t && mergeStamps().includes(t) ? ok(MERGE_FIXTURE) : missing();
+  }
   if (/^meta1-/.test(file)) {
     return ok(chmiTable("WSI,GH_ID,FULL_NAME,GEOGR1,GEOGR2,ELEVATION,BEGIN_DATE", [
       ...CHMI.map(([id, wsi, name, lon, lat, elev]) => [wsi, id, name, lon, lat, elev, "1961-01-01T00:00:00Z"]),

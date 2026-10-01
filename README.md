@@ -5,7 +5,9 @@ co stanice opravdu naměřily. Výsledek nabízí jako **webové srovnání pro 
 místo** a jako **API**, ze kterého si aplikace (například
 [zmoknu](https://github.com/jvaclavik/zmoknu)) vezme nejlepší model pro místo.
 
-Bez závislostí: Node 20+, statický web a serverless funkce na Vercelu.
+Node 20+, statický web a serverless funkce na Vercelu. Jediná závislost je
+[jsfive](https://github.com/usnistgov/jsfive) na čtení radarových dat (HDF5)
+v nočním sběru.
 
 ## Jak to funguje
 
@@ -20,6 +22,11 @@ Bez závislostí: Node 20+, statický web a serverless funkce na Vercelu.
      dalšího měsíce – sběr je doplní sám, jakmile vyjdou.
    - **METAR** letišť v Česku a okolních státech přes
      [Iowa Environmental Mesonet](https://mesonet.agron.iastate.edu/).
+   - **Radar ČHMÚ MERGE** (radar zkalibrovaný srážkoměry, hodinový úhrn
+     v mřížce ~1 km, archiv asi týden): úhrn srážek tam, kde chybí
+     srážkoměr (letiště v dosahu radaru, stanice bez srážkoměru, výpadky).
+     Hodnota, která v pixelu stojí 12 a víc hodin, se zahodí jako falešné
+     echo (např. 27.–29. 9. 2026 u Pardubic).
 
    Pro teplotu, vítr a srážky spočítá denní souhrny chyb a uloží je do
    `archive/<stanice>/<RRRR-MM>.json` (`empty` = dny, kdy stanice neměřila,
@@ -44,10 +51,14 @@ Bez závislostí: Node 20+, statický web a serverless funkce na Vercelu.
 |---|---|
 | Teplota | průměrná odchylka (°C), systematický posun, podíl hodin do ±2 °C |
 | Vítr | průměrná odchylka (m/s), podíl hodin do ±2 m/s |
-| Srážky | trefa deště: trefené deštivé hodiny / (trefené + nepředpovězené + plané poplachy) |
+| Srážky | trefa deště (≥ 0,1 mm/h): trefené deštivé hodiny / (trefené + nepředpovězené + plané poplachy); totéž pro silnější déšť (≥ 1 mm/h); chyba úhrnu v mm, kde ho známe |
 
 **Hodnocení 0–100** = jak blízko má model k nejlepšímu (100 = nejlepší).
 Teplota váží 50 %, vítr a srážky po 25 % (`public/lib/config.js`).
+
+Modely jsou stejné jako v aplikaci zmoknu kromě KMA (Korea) a BOM ACCESS-G
+(Austrálie): ty v Česku a okolí nebyly nejlepší pro žádnou stanici, veličinu
+ani předstih.
 
 ## API
 
@@ -133,9 +144,9 @@ takže omezení podle webové domény nepoužívejte. Našeptávač posílá
 
 ## Omezení a další kroky
 
-- Srážky se zatím hodnotí jen jako trefa/minutí (déšť ≥ 0,1 mm za hodinu),
-  i když ČHMÚ měří úhrny. Další krok: chyba v mm a radarový odhad srážek ČHMÚ
-  (MERGE, mřížka 1 km), aby šlo ověřovat i mimo stanice.
+- Radar sahá jen kousek za hranice Česka a jeho archiv má asi týden, proto
+  slouží jako doplněk srážkoměrů, ne jako hlavní zdroj. Ověřovat předpověď
+  pro místa bez stanice by šlo, ale každé místo stojí dotazy na Open-Meteo.
 - Archiv roste zhruba o 340 MB ročně (~330 stanic, 2,8 kB na stanici a den). Na rok dva to v gitu
   stačí, pak bude lepší ho přesunout do úložiště mimo repozitář.
 - V okolních státech zůstávají jen letiště (METAR).

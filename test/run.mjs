@@ -1,7 +1,7 @@
 // Offline test: sběr nad napodobenými API do dočasné složky, příprava dat
 // pro API a volání API.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import assert from "node:assert/strict";
@@ -23,6 +23,31 @@ console.log(collected.split("\n").filter((l) => /^(Stanic|Hotovo)/.test(l)).join
 assert.ok(existsSync(join(out, "archive/H3LSNE01/station.json")), "chybí stanice ČHMÚ");
 assert.ok(!existsSync(join(out, "archive/ZIS04030")), "stanice mimo ČR");
 assert.ok(!existsSync(join(out, "archive/B1SRAZ01")), "stanice bez teploty");
+assert.match(collected, /Radar MERGE: 6 hodinových snímků/);
+
+// Úhrn srážek včera: srážkoměr (Libuš, 24 h), radar (letiště LKPR a Trutnov
+// bez srážkoměru, jen 6 h se snímky).
+const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+const pHours = (id) => {
+  const mo = JSON.parse(readFileSync(join(out, `archive/${id}/${yesterday.slice(0, 7)}.json`), "utf8"));
+  return mo.days[yesterday]?.best_match?.[1]?.[12] ?? 0;
+};
+assert.ok(pHours("P1PLIB01") >= 20, `Libuš: srážkoměr ${pHours("P1PLIB01")} h`);
+assert.equal(pHours("LKPR"), 6, "LKPR: úhrn z radaru");
+assert.equal(pHours("H1TRUT01"), 6, "Trutnov: úhrn z radaru");
+assert.equal(pHours("EDDM"), 0, "Mnichov je mimo dosah radaru");
+
+// Radar: rohy mřížky a filtr falešného echa.
+const radar = await import(join(root, "scripts/radar.mjs"));
+const grid = radar.decodeMerge(readFileSync(join(root, "test/fixtures/merge-202609241000.hdf")));
+assert.equal(grid.length, 598 * 378);
+assert.equal(radar.mergePixel(51.458, 19.6239), 597);
+assert.equal(radar.mergePixel(45, 10), -1);
+assert.ok(radar.mergeValue(grid, radar.mergePixel(50.736, 15.74)) > 5, "Sněžka 24. 9. pršelo");
+const stuck = new Map(Array.from({ length: 14 }, (_, h) => [`2026-09-27T${String(h).padStart(2, "0")}`, h < 2 ? 0.5 : 0.2]));
+radar.dropStuck(stuck);
+assert.deepEqual([...stuck.keys()], ["2026-09-27T00", "2026-09-27T01"]);
+
 // Druhý běh nemá co doplňovat (dny bez měření jsou označené jako prázdné).
 assert.match(run("scripts/collect.mjs"), /nově 0 stanice-dní/);
 console.log(run("scripts/build-data.mjs").trim());

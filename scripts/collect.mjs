@@ -3,6 +3,8 @@
 // modelech a předstizích. Měření:
 //   - stanice ČHMÚ v Česku (otevřená 10min data, ~300 stanic s teplotou),
 //   - letištní METAR v Česku a okolí (Iowa Environmental Mesonet).
+// Úhrn srážek: srážkoměr ČHMÚ, kde chybí (letiště, výpadek), radar ČHMÚ
+// MERGE (archiv jen ~týden), jinak z METAR jen déšť ano/ne.
 //
 //   node scripts/collect.mjs                   doplní chybějící dny za BACKFILL_DAYS (35)
 //   BACKFILL_DAYS=90 node scripts/collect.mjs  delší historie
@@ -18,8 +20,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  F, F_LEN, LEADS, MODELS, TEMP_OK, VARIABLES, WET_MM, WIND_OK,
+  F, F_LEN, F_SUMS, HEAVY_MM, LEADS, MODELS, TEMP_OK, VARIABLES, WET_MM, WIND_OK, roundSum,
 } from "../public/lib/config.js";
+import { loadMerge, mergeHours } from "./radar.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // OUT_DIR jen pro testy (aby testovací data nepřepsala skutečná).
@@ -34,7 +37,9 @@ const BBOX = { minLat: 47.6, maxLat: 51.9, minLon: 11.0, maxLon: 19.9 };
 const CZ_BBOX = { minLat: 48.5, maxLat: 51.1, minLon: 12.0, maxLon: 18.9 };
 const BACKFILL_DAYS = Number(process.env.BACKFILL_DAYS ?? 35);
 const OM_BUDGET = Number(process.env.OM_BUDGET ?? 9000);
-const STATION_LIMIT = Number(process.env.STATION_LIMIT ?? 0); // jen pro testy
+// Jen pro testy a zkoušky: kolik stanic vzít / každou kolikátou.
+const STATION_LIMIT = Number(process.env.STATION_LIMIT ?? 0);
+const STATION_STEP = Number(process.env.STATION_STEP ?? 1);
 // Den musí mít aspoň tolik hodin měření, jinak ho přeskočíme (výpadek stanice).
 const MIN_OBS_HOURS = 12;
 // Den bez měření označíme jako prázdný až po této době (data mohou dorazit později).
@@ -67,6 +72,22 @@ async function fetchText(url, tries = 4) {
     }
     // IEM při přetížení vrací 503 a krátká pauza nestačí: 5, 10, 20 s.
     if (i < tries - 1) await sleep(5000 * 2 ** i);
+  }
+  throw last;
+}
+
+async function fetchBuffer(url, tries = 3) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url, { headers: HEADERS });
+      if (res.ok) return Buffer.from(await res.arrayBuffer());
+      last = Object.assign(new Error(`HTTP ${res.status} ${url.slice(0, 120)}`), { status: res.status });
+      if (res.status < 500 && res.status !== 429) break;
+    } catch (e) {
+      last = e;
+    }
+    if (i < tries - 1) await sleep(2000 * 2 ** i);
   }
   throw last;
 }
@@ -200,7 +221,8 @@ function hourSlots() {
   const hours = new Map();
   const slot = (k) => {
     let h = hours.get(k);
-    if (!h) hours.set(k, (h = { t: null, tD: Infinity, w: null, wD: Infinity, reports: 0, wet: false, mm: 0 }));
+    // reports > 0 = srážky v té hodině hodnotíme (wet), mmKnown = známe i úhrn (mm).
+    if (!h) hours.set(k, (h = { t: null, tD: Infinity, w: null, wD: Infinity, reports: 0, wet: false, mm: 0, mmKnown: false }));
     return h;
   };
   return { hours, slot };
@@ -327,9 +349,27 @@ async function loadChmiObservations(station, fromMs, toMs) {
   for (const s of hours.values()) {
     // Srážky hodnotíme jen při (téměř) úplné hodině 10min úhrnů.
     if (!station.precip || s.reports < 5) s.reports = 0;
+    s.mmKnown = s.reports > 0;
     s.wet = s.mm >= WET_MM;
   }
   return { hours, unavailable };
+}
+
+// Doplní úhrn z radaru do hodin, kde ho neznáme ze srážkoměru (METAR hlásí
+// jen déšť ano/ne, srážkoměr mohl vypadnout).
+function applyRadar(hours, byHour, fromMs, toMs) {
+  if (!byHour) return;
+  for (const [k, mm] of byHour) {
+    const t = Date.parse(`${k}:00Z`);
+    if (t < fromMs || t >= toMs + DAY) continue;
+    let s = hours.get(k);
+    if (!s) hours.set(k, (s = { t: null, w: null, reports: 0, wet: false, mm: 0, mmKnown: false }));
+    if (s.mmKnown) continue; // srážkoměr má přednost
+    s.mm = mm;
+    s.mmKnown = true;
+    s.reports = Math.max(s.reports, 1);
+    s.wet = mm >= WET_MM;
+  }
 }
 
 // ---------- předpovědi ----------
@@ -465,6 +505,15 @@ function scoreDays(obs, fc) {
           else if (fWet && !o.wet) a[F.fa]++;
           else a[F.cn]++;
         }
+        if (fp != null && o.mmKnown) {
+          const e = fp - o.mm;
+          a[F.pN]++; a[F.pAbs] += Math.abs(e); a[F.pSum] += e;
+          const f1 = fp >= HEAVY_MM;
+          const o1 = o.mm >= HEAVY_MM;
+          if (f1 && o1) a[F.hit1]++;
+          else if (!f1 && o1) a[F.miss1]++;
+          else if (f1 && !o1) a[F.fa1]++;
+        }
       }
     }
   });
@@ -474,7 +523,7 @@ function scoreDays(obs, fc) {
     for (const [model, byLead] of Object.entries(byModel)) {
       for (const [d, a] of Object.entries(byLead)) {
         if (!a.some((x) => x)) delete byLead[d];
-        else for (const j of [F.tAbs, F.tSum, F.wAbs, F.wSum]) a[j] = Math.round(a[j] * 10) / 10;
+        else for (const j of F_SUMS) a[j] = roundSum(j, a[j]);
       }
       if (!Object.keys(byLead).length) delete byModel[model];
     }
@@ -515,7 +564,8 @@ async function main() {
     ...(SOURCES.includes("chmi") ? await loadChmiStations() : []),
     ...(SOURCES.includes("metar") ? await loadMetarStations() : []),
   ];
-  const list = STATION_LIMIT ? stations.slice(0, STATION_LIMIT) : stations;
+  const sampled = stations.filter((_, i) => i % STATION_STEP === 0);
+  const list = STATION_LIMIT ? sampled.slice(0, STATION_LIMIT) : sampled;
   const today = Date.parse(ymd(Date.now()));
   const last = today - DAY; // včerejšek – poslední den s kompletním měřením
   const first = last - (BACKFILL_DAYS - 1) * DAY;
@@ -535,6 +585,19 @@ async function main() {
     }
     await writeJson(resolve(ARCHIVE, st.id, "station.json"), st);
     work.push({ st, months, chunks: missingChunks(known, first, last), dirty: new Set() });
+  }
+
+  // Radar za hodiny ve sledovaném období (archiv má jen ~týden).
+  let radar = new Map();
+  if (work.some((w) => w.chunks.length)) {
+    try {
+      const hours = (await mergeHours(fetchText)).filter((t) => t >= first && t < last + DAY);
+      const r = await loadMerge(list, hours, fetchBuffer);
+      radar = r.series;
+      console.log(`Radar MERGE: ${r.loaded} hodinových snímků, ${radar.size} stanic v dosahu`);
+    } catch (e) {
+      console.warn(`Radar MERGE: ${e.message}`);
+    }
   }
 
   // Nejdřív poslední dny všech stanic, pak starší úseky od nejnovějších.
@@ -557,6 +620,7 @@ async function main() {
       const obs = st.src === "chmi"
         ? await loadChmiObservations(st, c.start, c.end)
         : await loadMetarObservations(st, c.start - DAY, c.end + DAY);
+      applyRadar(obs.hours, radar.get(st.id), c.start, c.end);
       // Předpovědi stahujeme jen pro dny, které mají dost měření.
       const perDay = obsHoursPerDay(obs.hours);
       const good = [];

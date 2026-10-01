@@ -1,6 +1,8 @@
 // Sdílené nastavení – používá ho noční sběr, API i prohlížeč (čistý ES modul).
 
 // Modely stejné jako v aplikaci zmoknu (id = název modelu v Open-Meteo).
+// KMA (Korea) a BOM ACCESS-G (Austrálie) jsme vyřadili: v Česku a okolí nebyly
+// nejlepší pro žádnou stanici, veličinu ani předstih (ani v první trojce).
 export const MODELS = [
   { id: "best_match", label: "Automaticky", short: "Auto", color: "#5bb6ff" },
   { id: "icon_seamless", label: "DWD ICON", short: "ICON", color: "#e0a800" },
@@ -8,12 +10,10 @@ export const MODELS = [
   { id: "meteofrance_seamless", label: "Météo-France", short: "MF", color: "#e0608a" },
   { id: "ecmwf_ifs025", label: "ECMWF IFS", short: "ECMWF", color: "#8b6cf0" },
   { id: "ukmo_seamless", label: "UK Met Office", short: "UKMO", color: "#e07a2e" },
-  { id: "kma_seamless", label: "KMA (Korea)", short: "KMA", color: "#1495b8" },
   { id: "jma_seamless", label: "JMA (Japonsko)", short: "JMA", color: "#d9414e" },
   { id: "meteoswiss_icon_seamless", label: "MeteoSwiss ICON-CH", short: "ICON-CH", color: "#b5174f" },
   { id: "metno_seamless", label: "MET Norway", short: "METNO", color: "#5a9fbf" },
   { id: "gem_seamless", label: "GEM (Kanada)", short: "GEM", color: "#3fa8c4" },
-  { id: "bom_access_global", label: "BOM ACCESS-G", short: "BOM", color: "#7d4fd1" },
   { id: "cma_grapes_global", label: "CMA GRAPES", short: "CMA", color: "#c9822f" },
   { id: "knmi_seamless", label: "KNMI HARMONIE", short: "KNMI", color: "#6c9a46" },
   { id: "dmi_seamless", label: "DMI HARMONIE", short: "DMI", color: "#b39324" },
@@ -43,23 +43,35 @@ export const VARIABLES = {
 // Automaticky nahradí jen s náskokem aspoň tolika (jinak by výběr skákal po
 // šumu). Prahy z ověření na datech (výběr v srpnu, test v září 2026, 28 stanic,
 // předstih 1–2 dny): u větru 5 % sníží chybu o 14 %, u teploty o 1–2 %.
-// U srážek výběr na 1–2 dny nepomohl při žádném prahu (METAR hlásí jen, zda
-// prší, ne kolik), proto je zatím vypnutý – zůstávají Automaticky.
+// U srážek výběr nepomohl ani s úhrny ze srážkoměrů ČHMÚ (výběr v červenci,
+// test v srpnu, 24 stanic): podle trefy deště ji v srpnu zhoršil (24,8 → 20,6 %),
+// podle chyby v mm vybíral hrubé modely (hlavně JMA), které prší slabě a často –
+// chyba v mm klesla o 9 %, ale trefa deště taky. Srážky proto zůstávají Automaticky.
 export const AUTO_MODEL = "best_match";
 export const MIX_MIN_GAIN = { temperature: 0.05, wind: 0.05, precipitation: Infinity };
 
-// „Trefa": teplota do ±2 °C, vítr do ±2 m/s, déšť = aspoň 0,1 mm za hodinu.
+// „Trefa": teplota do ±2 °C, vítr do ±2 m/s, déšť = aspoň 0,1 mm za hodinu,
+// silnější déšť = aspoň 1 mm za hodinu.
 export const TEMP_OK = 2;
 export const WIND_OK = 2;
 export const WET_MM = 0.1;
+export const HEAVY_MM = 1;
 
 // Pořadí čísel v denním souhrnu (pole na model × předstih × den):
 // teplota: počet, součet |chyb|, součet chyb, počet do ±2 °C
 // vítr:    počet, součet |chyb|, součet chyb, počet do ±2 m/s
-// srážky:  trefa, minutí, planý poplach, správně sucho
+// srážky:  trefa, minutí, planý poplach, správně sucho (déšť ano/ne)
+// úhrn:    počet hodin se známým úhrnem, součet |chyb| a chyb v mm,
+//          trefa, minutí a planý poplach silnějšího deště
+// Starší záznamy mají jen prvních 12 čísel (bez úhrnů) – chybějící = 0.
 export const F = {
   tN: 0, tAbs: 1, tSum: 2, tOk: 3,
   wN: 4, wAbs: 5, wSum: 6, wOk: 7,
   hit: 8, miss: 9, fa: 10, cn: 11,
+  pN: 12, pAbs: 13, pSum: 14, hit1: 15, miss1: 16, fa1: 17,
 };
-export const F_LEN = 12;
+export const F_LEN = 18;
+// Součty se ukládají zaokrouhlené (ostatní čísla jsou počty): °C a m/s na
+// desetiny, mm na setiny.
+export const F_SUMS = [F.tAbs, F.tSum, F.wAbs, F.wSum, F.pAbs, F.pSum];
+export const roundSum = (j, x) => (j === F.pAbs || j === F.pSum ? Math.round(x * 100) / 100 : Math.round(x * 10) / 10);

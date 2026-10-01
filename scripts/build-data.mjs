@@ -9,7 +9,7 @@
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DAILY_DAYS, F, F_LEN, LEADS, WINDOWS } from "../public/lib/config.js";
+import { DAILY_DAYS, F_LEN, F_SUMS, LEADS, WINDOWS, roundSum } from "../public/lib/config.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = process.env.OUT_DIR ? resolve(process.env.OUT_DIR) : root;
@@ -87,7 +87,7 @@ for (const { meta, files } of stations) {
     }
     for (const byLead of Object.values(sums)) {
       for (const s of Object.values(byLead)) {
-        for (const j of [F.tAbs, F.tSum, F.wAbs, F.wSum]) s[j] = Math.round(s[j] * 10) / 10;
+        for (const j of F_SUMS) s[j] = roundSum(j, s[j]);
       }
     }
     windows[w] = sums;

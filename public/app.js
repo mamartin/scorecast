@@ -263,7 +263,8 @@ function windStat(w) {
 
 function precipStat(p) {
   if (!p || p.csi == null || p.wetHours < 5) return `<dd>–<small>málo deště k hodnocení</small></dd>`;
-  return `<dd>${nf0.format(p.csi)} %<small>trefa deště</small></dd>`;
+  const heavy = p.heavyCsi != null && p.heavyHours >= 3 ? `<small>silnější déšť ${nf0.format(p.heavyCsi)} %</small>` : "";
+  return `<dd>${nf0.format(p.csi)} %<small>trefa deště</small>${heavy}</dd>`;
 }
 
 function segment(name, legend, options, current, key) {
