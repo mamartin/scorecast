@@ -48,11 +48,23 @@ Všechna volání jsou `GET`, vrací JSON a povolují CORS.
   "mae": 0.54, "baselineMae": 0.65,
   "station": "Prague", "distanceKm": 12, "stations": 2,
   "leads": [1, 2], "window": { "start": "2026-09-01", "end": "2026-09-30", "days": 30 },
-  "bestBy": { "temperature": "chmi_aladin_cz_1km", "wind": "ecmwf_ifs025", "precipitation": "icon_seamless" }
+  "bestBy": { "temperature": "chmi_aladin_cz_1km", "wind": "ecmwf_ifs025", "precipitation": "icon_seamless" },
+  "mix": {
+    "temperature": { "model": "best_match", "label": "Automaticky", "metric": "mae", "value": 0.94, "auto": 0.94, "gainPct": 0 },
+    "wind": { "model": "gfs_seamless", "label": "NOAA GFS", "metric": "mae", "value": 0.96, "auto": 1.26, "gainPct": 24 },
+    "precipitation": { "model": "best_match", "label": "Automaticky", "metric": "csi", "value": 31, "auto": 31, "gainPct": 0 }
+  }
 }
 ```
 
-Bez stanic v okolí vrací `"model": null` – aplikace pak použije svůj výchozí model.
+`mix` je model zvlášť pro teplotu, vítr a srážky, ze kterých aplikace skládá
+předpověď. Automaticky (`best_match`) nahradí jen model s jasným náskokem
+(`gainPct`, práh `MIX_MIN_GAIN` v `public/lib/config.js`: 5 % u teploty
+a větru). Srážky zatím zůstávají Automaticky: podle ověření na datech jejich
+výběr podle METAR nepomáhá.
+
+Bez stanic v okolí vrací `"model": null` a `"mix": null` – aplikace pak použije
+svůj výchozí model.
 
 ### `/api/compare?lat=…&lon=…&days=30&leads=1,2` – plné srovnání
 

@@ -34,6 +34,15 @@ export const VARIABLES = {
   precipitation: { om: "precipitation", label: "Srážky", unit: "", weight: 0.25 },
 };
 
+// Mix pro aplikace (/api/best): pro každou veličinu nejlepší model, ale
+// Automaticky nahradí jen s náskokem aspoň tolika (jinak by výběr skákal po
+// šumu). Prahy z ověření na datech (výběr v srpnu, test v září 2026, 28 stanic,
+// předstih 1–2 dny): u větru 5 % sníží chybu o 14 %, u teploty o 1–2 %.
+// U srážek výběr na 1–2 dny nepomohl při žádném prahu (METAR hlásí jen, zda
+// prší, ne kolik), proto je zatím vypnutý – zůstávají Automaticky.
+export const AUTO_MODEL = "best_match";
+export const MIX_MIN_GAIN = { temperature: 0.05, wind: 0.05, precipitation: Infinity };
+
 // „Trefa": teplota do ±2 °C, vítr do ±2 m/s, déšť = aspoň 0,1 mm za hodinu.
 export const TEMP_OK = 2;
 export const WIND_OK = 2;

@@ -44,8 +44,19 @@ assert.equal(b.status, 200);
 assert.ok(b.json.model);
 console.log("Brno /api/best:", b.json);
 
+// Mix: model pro každou veličinu, jiný než Automaticky jen s náskokem nad prahem.
+const { MIX_MIN_GAIN, MODEL_BY_ID } = await import(join(root, "public/lib/config.js"));
+for (const v of ["temperature", "wind", "precipitation"]) {
+  const g = b.json.mix?.[v];
+  assert.ok(g && MODEL_BY_ID[g.model], `mix bez ${v}`);
+  if (g.model !== "best_match") assert.ok(g.gainPct >= 100 * MIX_MIN_GAIN[v], `${v}: malý náskok ${g.gainPct} %`);
+  else assert.equal(g.gainPct, 0);
+}
+console.log("Brno mix:", Object.entries(b.json.mix).map(([v, g]) => `${v} ${g.model} (${g.gainPct} %)`).join(", "));
+
 const far = await call("best", "lat=38.7&lon=-9.1");
 assert.equal(far.json.model, null);
+assert.equal(far.json.mix, null);
 const bad = await call("compare", "lat=abc&lon=1");
 assert.equal(bad.status, 400);
 const pl = await call("places", "q=Praha");
