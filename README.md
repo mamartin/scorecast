@@ -1,4 +1,4 @@
-# Přesnost předpovědí
+# Scorecast
 
 Každou noc porovná, co jednotlivé modely předpovědi počasí předpověděly, s tím,
 co stanice opravdu naměřily. Výsledek nabízí jako **webové srovnání pro libovolné
@@ -80,8 +80,8 @@ npm run dev       # http://localhost:3000
 Lokální server nad testovacími daty:
 
 ```bash
-OUT_DIR=/tmp/presnost-test npm test
-DATA_ROOT=/tmp/presnost-test node --import ./test/mock-fetch.mjs scripts/dev-server.mjs
+OUT_DIR=/tmp/scorecast-test npm test
+DATA_ROOT=/tmp/scorecast-test node --import ./test/mock-fetch.mjs scripts/dev-server.mjs
 ```
 
 ## Nasazení

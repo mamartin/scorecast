@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import assert from "node:assert/strict";
 
 const root = resolve(import.meta.dirname, "..");
-const out = process.env.OUT_DIR ?? mkdtempSync(join(tmpdir(), "presnost-"));
+const out = process.env.OUT_DIR ?? mkdtempSync(join(tmpdir(), "scorecast-"));
 const days = process.env.TEST_DAYS ?? "40";
 const r = spawnSync(process.execPath, ["--import", join(root, "test/mock-fetch.mjs"), join(root, "scripts/collect.mjs")], {
   env: { ...process.env, OUT_DIR: out, BACKFILL_DAYS: days },

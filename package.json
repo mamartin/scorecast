@@ -1,5 +1,5 @@
 {
-  "name": "presnost-modelu",
+  "name": "scorecast",
   "private": true,
   "version": "0.1.0",
   "description": "Noční ověřování přesnosti předpovědních modelů počasí proti měření stanic, API a webové srovnání.",

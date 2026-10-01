@@ -35,7 +35,7 @@ const MIN_OBS_HOURS = 12;
 const IEM_GEOJSON = (n) => `https://mesonet.agron.iastate.edu/geojson/network/${n}.geojson`;
 const IEM_ASOS = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py";
 const PREVIOUS_RUNS = "https://previous-runs-api.open-meteo.com/v1/forecast";
-const HEADERS = { "User-Agent": "presnost-modelu/1.0 (overeni predpovedi pocasi)" };
+const HEADERS = { "User-Agent": "scorecast/1.0 (+https://github.com/mamartin/scorecast)" };
 const KNOT = 0.514444;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -43,7 +43,7 @@ const DAY = 86_400_000;
 const ymd = (t) => new Date(t).toISOString().slice(0, 10);
 const hourKey = (t) => new Date(t).toISOString().slice(0, 13);
 
-async function fetchText(url, tries = 3) {
+async function fetchText(url, tries = 4) {
   let last;
   for (let i = 0; i < tries; i++) {
     try {
@@ -54,7 +54,8 @@ async function fetchText(url, tries = 3) {
     } catch (e) {
       last = e;
     }
-    await sleep(2000 * (i + 1));
+    // IEM při přetížení vrací 503 a krátká pauza nestačí: 5, 10, 20 s.
+    if (i < tries - 1) await sleep(5000 * 2 ** i);
   }
   throw last;
 }
