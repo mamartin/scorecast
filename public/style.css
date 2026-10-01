@@ -7,14 +7,15 @@
   --line: #d3dce0;
   --sock: #d9480f;
   --sock-soft: #fde4d6;
-  --bar: #3a78bd;
   --bar-track: #e3eaee;
-  --s1: #dbe8f4;
-  --s2: #a9c9e8;
-  --s3: #6fa3d6;
-  --s4: #3a78bd;
-  --s5: #1d4f8f;
-  --focus: #1d4f8f;
+  /* Shoda od nejhorší (s1, červená) po nejlepší (s5, zelená). Světlost roste
+     plynule, ať pořadí přečte i člověk se zhoršeným vnímáním červené/zelené. */
+  --s1: #a21829;
+  --s2: #b93f00;
+  --s3: #bd6c01;
+  --s4: #a49b06;
+  --s5: #51c96b;
+  --focus: #16232b;
   --display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
   --text: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
   color-scheme: light;
@@ -30,14 +31,13 @@
     --line: #2b3a42;
     --sock: #ff7a3d;
     --sock-soft: #3a2418;
-    --bar: #6aa1db;
     --bar-track: #24333b;
-    --s1: #22374c;
-    --s2: #2d5680;
-    --s3: #3f78b3;
-    --s4: #6aa1db;
-    --s5: #a9cff5;
-    --focus: #a9cff5;
+    --s1: #c43f40;
+    --s2: #d95f19;
+    --s3: #d98b09;
+    --s4: #b2bf2f;
+    --s5: #74e791;
+    --focus: #e6edf0;
     color-scheme: dark;
   }
 }
@@ -210,7 +210,7 @@ h1 {
   margin: 10px 0 0;
 }
 .verdict .why div { border-left: 3px solid var(--line); padding-left: 10px; }
-.verdict .why div.pick { border-left-color: var(--sock); }
+.verdict .why div.pick { border-left-color: var(--s5); }
 .verdict .why dt { color: var(--muted); font-size: 0.85rem; }
 .verdict .why dd { margin: 2px 0 0; font-weight: 700; line-height: 1.25; }
 .verdict .why dd small { display: block; margin-top: 2px; font-weight: 400; font-size: 0.8rem; color: var(--muted); }
@@ -270,8 +270,11 @@ h1 {
   background: var(--bar-track);
   overflow: hidden;
 }
-.bar span { display: block; height: 100%; border-radius: 4px; background: var(--bar); }
-.row.top .bar span { background: var(--sock); }
+.bar span { display: block; height: 100%; border-radius: 4px; background: var(--s1); }
+.bar span[data-b="2"] { background: var(--s2); }
+.bar span[data-b="3"] { background: var(--s3); }
+.bar span[data-b="4"] { background: var(--s4); }
+.bar span[data-b="5"] { background: var(--s5); }
 
 .stats {
   display: grid;

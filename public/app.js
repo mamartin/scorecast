@@ -232,13 +232,15 @@ function sortValue(m) {
   return state.by === "score" ? m.score : m.rel?.[state.by] ?? -1;
 }
 
-function bucket(score) {
+// Stupeň barvy 1 (červená, nejhorší) až 5 (zelená, nejlepší), 0 = bez dat.
+// Hodnocení jednoho dne je přísnější (nejlepší model dne má vždy 100, vítěz
+// měsíce mívá v půlce dní kolem 78), proto má nižší hranice než celkové.
+const BUCKETS = { total: [90, 80, 70, 60], day: [85, 75, 65, 55] };
+
+function bucket(score, kind = "day") {
   if (score == null) return 0;
-  if (score >= 95) return 5;
-  if (score >= 85) return 4;
-  if (score >= 75) return 3;
-  if (score >= 60) return 2;
-  return 1;
+  const i = BUCKETS[kind].findIndex((x) => score >= x);
+  return i === -1 ? 1 : 5 - i;
 }
 
 function tempStat(t) {
@@ -348,7 +350,7 @@ function row(m, i, shownDays) {
         <span class="name">${esc(m.label)}</span>
         <span class="score" aria-label="hodnocení ${scoreText} ze 100">${scoreText}<small>/100</small></span>
       </div>
-      <div class="bar" aria-hidden="true"><span style="width:${bar}%"></span></div>
+      <div class="bar" aria-hidden="true"><span data-b="${bucket(value >= 0 ? value : null, "total")}" style="width:${bar}%"></span></div>
       <dl class="stats">
         <div${on("temperature")}><dt>Teplota</dt>${tempStat(m.temperature)}</div>
         <div${on("wind")}><dt>Vítr</dt>${windStat(m.wind)}</div>
