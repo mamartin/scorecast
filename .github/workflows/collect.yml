@@ -1,0 +1,45 @@
+# Každou noc doplní srovnání předpovědí s měřením za včerejšek (a případně
+# chybějící dny) a uloží data do repozitáře. Commit spustí deploy na Vercelu.
+name: Noční ověření modelů
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # 03:17 UTC – měření za včerejšek je kompletní
+  workflow_dispatch:
+    inputs:
+      backfill_days:
+        description: "Kolik dní zpět doplnit (první spuštění třeba 60)"
+        required: false
+        default: "3"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Sběr a výpočet
+        env:
+          BACKFILL_DAYS: ${{ github.event.inputs.backfill_days || '3' }}
+        run: node scripts/collect.mjs
+      - name: Uložit data
+        run: |
+          git add archive public/data
+          if git diff --cached --quiet; then
+            echo "Beze změny."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Data: ověření modelů $(date -u +%F)"
+          git push

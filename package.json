@@ -1,0 +1,14 @@
+{
+  "name": "presnost-modelu",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Noční ověřování přesnosti předpovědních modelů počasí proti měření stanic, API a webové srovnání.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "collect": "node scripts/collect.mjs",
+    "backfill": "BACKFILL_DAYS=60 node scripts/collect.mjs",
+    "dev": "node scripts/dev-server.mjs",
+    "test": "node test/run.mjs"
+  }
+}

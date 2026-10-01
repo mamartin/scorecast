@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Přesnost předpovědí</title>
+  <meta name="description" content="Který model předpovědi počasí se u vás nejvíc trefuje – porovnání s měřením stanic za poslední dny." />
+  <meta name="theme-color" content="#f1f4f5" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#121a1f" media="(prefers-color-scheme: dark)" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M6 4v26' stroke='%2316232b' stroke-width='3'/%3E%3Cpath d='M7 6l20 3-1 9-19 1z' fill='%23e8590c'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="top">
+    <a class="wordmark" href="/" aria-label="Přesnost předpovědí – úvod">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6 4v26" /><path class="sock" d="M7 6l20 3-1 9-19 1z" /></svg>
+      Přesnost předpovědí
+    </a>
+  </header>
+
+  <main class="page">
+    <section class="ask">
+      <h1>Který model se u vás trefuje?</h1>
+      <p class="lede">Každou noc porovnáváme, co modely předpověděly, s tím, co stanice opravdu naměřily. Zadejte místo a uvidíte, komu tam věřit.</p>
+
+      <div class="search" id="search">
+        <label class="sr-only" for="q">Místo</label>
+        <input id="q" type="search" autocomplete="off" spellcheck="false"
+          placeholder="Obec, kopec nebo adresa"
+          role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggest" />
+        <button type="button" class="locate" id="locate" title="Použít moji polohu">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4" /></svg>
+          <span>Moje poloha</span>
+        </button>
+        <ul id="suggest" class="suggest" role="listbox" hidden></ul>
+      </div>
+      <p class="quick" id="quick">
+        Například
+        <button type="button" data-place="Praha|50.0880|14.4208">Praha</button>,
+        <button type="button" data-place="Brno|49.1951|16.6068">Brno</button>,
+        <button type="button" data-place="Ostrava|49.8209|18.2625">Ostrava</button> nebo
+        <button type="button" data-place="Karlovy Vary|50.2319|12.8720">Karlovy Vary</button>.
+      </p>
+    </section>
+
+    <section class="result" id="result" aria-live="polite"></section>
+  </main>
+
+  <footer class="foot">
+    <details>
+      <summary>Jak to počítáme</summary>
+      <p>Bereme předpovědi, které modely vydaly 1, 2, 3 a 5 dní předem (archiv <a href="https://open-meteo.com/en/docs/previous-runs-api">Open-Meteo</a>), a hodinu po hodině je porovnáváme s měřením letištních stanic (METAR přes <a href="https://mesonet.agron.iastate.edu/">Iowa Environmental Mesonet</a>). Pro zvolené místo sčítáme stanice do 80 km, bližší mají větší váhu.</p>
+      <p><strong>Teplota a vítr:</strong> průměrná odchylka od měření a podíl hodin, kdy se model trefil do 2 °C, resp. 2 m/s.</p>
+      <p><strong>Srážky:</strong> trefa deště = hodiny, kdy pršelo a model to čekal, děleno všemi hodinami, kdy pršelo nebo to model čekal. Suché hodiny, kdy oba souhlasí, se nepočítají, jinak by vycházelo skoro 100 % každému.</p>
+      <p><strong>Hodnocení 0–100</strong> říká, jak blízko má model k nejlepšímu: 100 = nejmenší chyba. Teplota váží polovinou, vítr a srážky čtvrtinou.</p>
+      <p>Ověřujeme zatím Česko a okolí. Letiště leží většinou v nížinách, na horách proto berte výsledky s rezervou.</p>
+    </details>
+    <p class="updated" id="updated"></p>
+  </footer>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
